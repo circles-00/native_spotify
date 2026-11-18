@@ -1,0 +1,38 @@
+name: Native builds
+
+on: [push, pull_request]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build
+      - run: cmake --build build --config Release
+      - run: ctest -C Release --output-on-failure -V
+        working-directory: build
+      - name: Window smoke test
+        shell: pwsh
+        run: |
+          $env:NATIVE_CONTROLLER_SMOKE = '1'
+          $app = Start-Process build/Release/native_spotify.exe -PassThru
+          if (!$app.WaitForExit(10000)) { $app.Kill(); throw 'Window smoke test timed out' }
+          if ($app.ExitCode -ne 0) { throw 'Window smoke test failed' }
+      - name: Bundle complete application
+        run: cmake --build build --config Release --target package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: build/native-spotify-Windows-*.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libx11-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev libjpeg-dev libpng-dev libcurl4-openssl-dev libssl-dev libsecret-1-dev xvfb
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --parallel
+      - run: ctest --output-on-failure -V
+        working-directory: build
+      - run: xvfb-run -a build/native_spotify --smoke-test
