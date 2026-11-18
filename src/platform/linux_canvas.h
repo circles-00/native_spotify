@@ -2,6 +2,7 @@
 #define NATIVE_LINUX_CANVAS_H
 
 #include "canvas.h"
+#include "artwork.h"
 #include <pango/pangocairo.h>
 
 typedef struct {
@@ -12,6 +13,7 @@ typedef struct {
 } LinuxCanvas;
 
 void linux_canvas_begin(LinuxCanvas *backend, cairo_t *paint, Canvas *canvas);
+void linux_canvas_paint_image(LinuxCanvas *backend, const Image *image, Rect rect, float radius);
 void linux_canvas_end(LinuxCanvas *backend);
 void linux_canvas_destroy(LinuxCanvas *backend);
 void linux_load_font(void);

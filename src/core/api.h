@@ -34,7 +34,25 @@ bool spotify_collection(Spotify *spotify, ItemKind kind, const char *id, Collect
 bool spotify_popular(Spotify *spotify, const char *id, CollectionInfo *info);
 bool spotify_collection_saved(Spotify *spotify, const CatalogItem *item, bool *saved);
 bool spotify_save_collection(Spotify *spotify, const CatalogItem *item, bool saved);
+bool spotify_song_liked(Spotify *spotify, const char *id, bool *liked);
+#define LIKE_CHECK_LIMIT 40
+
+bool spotify_songs_liked(Spotify *spotify, const char ids[][23], unsigned count, bool *liked);
+bool spotify_tracks_page(Spotify *spotify, const BrowseRequest *request, TrackPage *page);
+bool spotify_playlist_snapshot(Spotify *spotify, const char *id, char *out, size_t capacity);
+bool spotify_save_song(Spotify *spotify, const char *id, bool liked);
+bool spotify_song(Spotify *spotify, const char *id, CatalogItem *item);
 bool spotify_profile(Spotify *spotify, ProfileInfo *profile);
 bool spotify_enqueue(Spotify *spotify, const Playback *target, const CatalogItem *item);
 bool spotify_play_radio(Spotify *spotify, const Playback *target, const CatalogItem *seed, bool play_first);
+typedef struct {
+    CatalogItem tracks[SONG_RADIO_LIMIT];
+    unsigned count;
+} SongRadio;
+
+unsigned spotify_radio_tracks(Spotify *spotify, const CatalogItem *seed, CatalogItem *tracks, unsigned limit);
+bool spotify_song_radio(Spotify *spotify, const CatalogItem *seed, SongRadio *radio);
+bool spotify_play_tracks(Spotify *spotify, const Playback *target, const char ids[][23], unsigned count);
+bool spotify_play_restored(Spotify *spotify, const Playback *target, const Playback *restored,
+                           const Queue *queue);
 #endif

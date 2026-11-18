@@ -1,0 +1,14 @@
+#ifndef NATIVE_DARK_PALETTE_H
+#define NATIVE_DARK_PALETTE_H
+
+#define DARK_BODY 0x0f1114u
+#define DARK_CHROME 0x15181cu
+#define DARK_TILE 0x1d2127u
+#define DARK_HOVER 0x292f39u
+#define DARK_SELECTED 0x252b34u
+#define DARK_BORDER 0x2a3038u
+#define DARK_TEXT 0xf2f4f6u
+#define DARK_MUTED 0xa9b1bcu
+#define DARK_ACCENT 0x1ed760u
+
+#endif

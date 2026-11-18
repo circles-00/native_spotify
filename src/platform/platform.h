@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HTTP_BODY_LIMIT (1024 * 1024)
+#define HTTP_BODY_LIMIT (2 * 1024 * 1024)
 typedef struct {
     int status;
     unsigned retry_after;
@@ -13,6 +13,7 @@ typedef struct {
 } HttpResponse;
 
 bool platform_init(void);
+void platform_trim_memory(void);
 bool platform_random(unsigned char *out, size_t size);
 bool platform_sha256(const char *text, unsigned char out[32]);
 uint64_t platform_seconds(void);

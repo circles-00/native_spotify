@@ -14,6 +14,12 @@ static void response_free(HttpResponse *response) {
 }
 
 static bool ensure_token(Spotify *spotify);
+static bool request(Spotify *spotify, const char *method, const char *url, const char *body, bool form,
+                    HttpResponse *response);
+
+static bool request_url(Spotify *spotify, const char *url, HttpResponse *response) {
+    return request(spotify, "GET", url, NULL, false, response);
+}
 
 static bool request(Spotify *spotify, const char *method, const char *url, const char *body, bool form,
                     HttpResponse *response) {
@@ -468,6 +474,168 @@ bool spotify_save_collection(Spotify *spotify, const CatalogItem *item, bool sav
     return ok;
 }
 
+static bool song_library_request(Spotify *spotify, const char *method, const char *id,
+                                 bool contains, HttpResponse *response) {
+    if (!spotify_id_valid(id) || !ensure_token(spotify)) {
+        return false;
+    }
+
+    char url[160];
+    snprintf(url, sizeof(url), "https://api.spotify.com/v1/me/library%s?uris=spotify%%3Atrack%%3A%s",
+             contains ? "/contains" : "", id);
+
+    if (request(spotify, method, url, NULL, false, response)) {
+        return true;
+    }
+
+    if (spotify->last_status != 404 && spotify->last_status != 405) {
+        return false;
+    }
+
+    snprintf(url, sizeof(url), "https://api.spotify.com/v1/me/tracks%s?ids=%s",
+             contains ? "/contains" : "", id);
+    return request(spotify, method, url, NULL, false, response);
+}
+
+bool spotify_song_liked(Spotify *spotify, const char *id, bool *liked) {
+    HttpResponse response = {0};
+
+    if (!song_library_request(spotify, "GET", id, true, &response)) {
+        return false;
+    }
+
+    yyjson_doc *doc = yyjson_read(response.body, strlen(response.body), 0);
+    yyjson_val *value = yyjson_arr_get(yyjson_doc_get_root(doc), 0);
+    bool ok = yyjson_is_bool(value);
+    *liked = yyjson_get_bool(value);
+    yyjson_doc_free(doc);
+    response_free(&response);
+
+    if (!ok) {
+        snprintf(spotify->message, sizeof(spotify->message), "Could not read this song's like status.");
+    }
+
+    return ok;
+}
+
+bool spotify_songs_liked(Spotify *spotify, const char ids[][23], unsigned count, bool *liked) {
+    if (!count || count > LIKE_CHECK_LIMIT || !ensure_token(spotify)) {
+        return false;
+    }
+
+    char url[64 + LIKE_CHECK_LIMIT * 48] = "https://api.spotify.com/v1/me/library/contains?uris=";
+
+    for (unsigned i = 0; i < count; ++i) {
+        if (!spotify_id_valid(ids[i])) {
+            return false;
+        }
+
+        char entry[48];
+        snprintf(entry, sizeof(entry), "%sspotify%%3Atrack%%3A%s", i ? "%2C" : "", ids[i]);
+        strcat(url, entry);
+    }
+
+    HttpResponse response = {0};
+
+    if (!request(spotify, "GET", url, NULL, false, &response)) {
+        return false;
+    }
+
+    yyjson_doc *doc = yyjson_read(response.body, strlen(response.body), 0);
+    yyjson_val *values = yyjson_doc_get_root(doc);
+    bool ok = yyjson_is_arr(values) && yyjson_arr_size(values) == count;
+
+    for (unsigned i = 0; ok && i < count; ++i) {
+        yyjson_val *value = yyjson_arr_get(values, i);
+        ok = yyjson_is_bool(value);
+
+        if (ok) {
+            liked[i] = yyjson_get_bool(value);
+        }
+    }
+
+    yyjson_doc_free(doc);
+    response_free(&response);
+    return ok;
+}
+
+bool spotify_tracks_page(Spotify *spotify, const BrowseRequest *request, TrackPage *page) {
+    char url[256];
+
+    if (!browse_tracks_url(request, url, sizeof(url)) || !ensure_token(spotify)) {
+        return false;
+    }
+
+    HttpResponse response = {0};
+
+    if (!request_url(spotify, url, &response)) {
+        return false;
+    }
+
+    bool ok = browse_parse_tracks(response.body, request, page);
+    response_free(&response);
+
+    if (!ok) {
+        snprintf(spotify->message, sizeof(spotify->message), "Invalid track list response; try again.");
+    }
+
+    return ok;
+}
+
+bool spotify_playlist_snapshot(Spotify *spotify, const char *id, char *out, size_t capacity) {
+    char url[160];
+    snprintf(url, sizeof(url), "https://api.spotify.com/v1/playlists/%s?fields=snapshot_id", id);
+
+    if (!spotify_id_valid(id) || !ensure_token(spotify)) {
+        return false;
+    }
+
+    HttpResponse response = {0};
+
+    if (!request_url(spotify, url, &response)) {
+        return false;
+    }
+
+    yyjson_doc *doc = yyjson_read(response.body, strlen(response.body), 0);
+    const char *snapshot = yyjson_get_str(yyjson_obj_get(yyjson_doc_get_root(doc), "snapshot_id"));
+    bool ok = snapshot && snapshot[0] && strlen(snapshot) < capacity;
+
+    if (ok) {
+        snprintf(out, capacity, "%s", snapshot);
+    }
+
+    yyjson_doc_free(doc);
+    response_free(&response);
+    return ok;
+}
+
+bool spotify_save_song(Spotify *spotify, const char *id, bool liked) {
+    HttpResponse response = {0};
+    bool ok = song_library_request(spotify, liked ? "PUT" : "DELETE", id, false, &response);
+    response_free(&response);
+    return ok;
+}
+
+bool spotify_song(Spotify *spotify, const char *id, CatalogItem *item) {
+    if (!spotify_id_valid(id) || !ensure_token(spotify)) {
+        return false;
+    }
+
+    char url[128];
+    snprintf(url, sizeof(url), "https://api.spotify.com/v1/tracks/%s", id);
+    HttpResponse response = {0};
+
+    if (!request(spotify, "GET", url, NULL, false, &response)) {
+        return false;
+    }
+
+    yyjson_doc *doc = yyjson_read(response.body, strlen(response.body), 0);
+    bool ok = catalog_item_parse(yyjson_doc_get_root(doc), ITEM_TRACK, item);
+    yyjson_doc_free(doc);
+    response_free(&response);
+    return ok;
+}
+
 bool spotify_profile(Spotify *spotify, ProfileInfo *profile) {
     if (!ensure_token(spotify)) {
         return false;
@@ -518,27 +686,42 @@ bool spotify_enqueue(Spotify *spotify, const Playback *target, const CatalogItem
     return ok;
 }
 
-bool spotify_play_radio(Spotify *spotify, const Playback *target, const CatalogItem *seed, bool play_first) {
-    if (!ensure_token(spotify)) {
+static bool radio_track_is_new(const CatalogItem *track, const CatalogItem *seed, const CatalogItem *tracks,
+                              unsigned count) {
+    if (track->kind != ITEM_TRACK || !item_can_play(track) || !strcmp(track->id, seed->id)) {
         return false;
     }
 
-    CatalogItem tracks[10] = {0};
+    for (unsigned i = 0; i < count; ++i) {
+        if (!strcmp(track->id, tracks[i].id)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static unsigned radio_recommendations(Spotify *spotify, const CatalogItem *seed, CatalogItem *tracks,
+                                      unsigned limit) {
+    if (!ensure_token(spotify)) {
+        return 0;
+    }
+
     unsigned count = 0;
 
     if (spotify_id_valid(seed->id)) {
         char rec_url[512];
-        snprintf(rec_url, sizeof(rec_url), "https://api.spotify.com/v1/recommendations?%s=%s&limit=10",
-                 seed->kind == ITEM_ARTIST ? "seed_artists" : "seed_tracks", seed->id);
+        snprintf(rec_url, sizeof(rec_url), "https://api.spotify.com/v1/recommendations?%s=%s&limit=%u",
+                 seed->kind == ITEM_ARTIST ? "seed_artists" : "seed_tracks", seed->id, limit);
         HttpResponse response = {0};
 
         if (request(spotify, "GET", rec_url, NULL, false, &response)) {
             yyjson_doc *doc = yyjson_read(response.body, strlen(response.body), 0);
             yyjson_val *arr = yyjson_obj_get(yyjson_doc_get_root(doc), "tracks");
 
-            for (size_t i = 0; i < yyjson_arr_size(arr) && count < 10; ++i) {
+            for (size_t i = 0; i < yyjson_arr_size(arr) && count < limit; ++i) {
                 if (catalog_item_parse(yyjson_arr_get(arr, i), ITEM_TRACK, &tracks[count]) &&
-                    tracks[count].playable && strcmp(tracks[count].id, seed->id) != 0) {
+                    radio_track_is_new(&tracks[count], seed, tracks, count)) {
                     ++count;
                 }
             }
@@ -549,21 +732,210 @@ bool spotify_play_radio(Spotify *spotify, const Playback *target, const CatalogI
         response_free(&response);
     }
 
-    if (!count) {
-        BrowseRequest search = {.kind = BROWSE_SEARCH, .filter = SEARCH_SONGS};
-        const char *q = seed->detail[0] ? seed->detail : seed->title;
+    return count;
+}
 
-        if (q[0] && search_append(search.query, q, strlen(q))) {
-            BrowsePage page = {0};
+/* Tops up the list with the seed artist's songs when recommendations come back short. */
+static unsigned radio_fill_from_search(Spotify *spotify, const CatalogItem *seed, CatalogItem *tracks,
+                                       unsigned count, unsigned limit) {
+    BrowseRequest search = {.kind = BROWSE_SEARCH, .filter = SEARCH_SONGS};
+    const char *query = seed->detail[0] ? seed->detail : seed->title;
 
-            if (spotify_browse(spotify, &search, &page)) {
-                for (unsigned i = 0; i < page.count && count < 10; ++i) {
-                    if (page.items[i].playable && strcmp(page.items[i].id, seed->id) != 0) {
-                        tracks[count++] = page.items[i];
-                    }
-                }
+    if (!query[0] || !search_append(search.query, query, strlen(query))) {
+        return count;
+    }
+
+    for (unsigned attempt = 0; attempt < 12 && count < limit; ++attempt) {
+        BrowsePage page;
+
+        if (!spotify_browse(spotify, &search, &page)) {
+            break;
+        }
+
+        for (unsigned i = 0; i < page.count && count < limit; ++i) {
+            if (radio_track_is_new(&page.items[i], seed, tracks, count)) {
+                tracks[count++] = page.items[i];
             }
         }
+
+        if (!page.has_next || !page.limit) {
+            break;
+        }
+
+        search.offset = page.offset + page.limit;
+    }
+
+    return count;
+}
+
+unsigned spotify_radio_tracks(Spotify *spotify, const CatalogItem *seed, CatalogItem *tracks, unsigned limit) {
+    unsigned found = radio_recommendations(spotify, seed, tracks, limit);
+    return radio_fill_from_search(spotify, seed, tracks, found, limit);
+}
+
+bool spotify_song_radio(Spotify *spotify, const CatalogItem *seed, SongRadio *radio) {
+    if (seed->kind != ITEM_TRACK || !spotify_id_valid(seed->id)) {
+        snprintf(spotify->message, sizeof(spotify->message), "Song radio requires a Spotify track.");
+        return false;
+    }
+
+    radio->tracks[0] = *seed;
+    radio->count = 1 + spotify_radio_tracks(spotify, seed, radio->tracks + 1, SONG_RADIO_LIMIT - 1);
+
+    if (radio->count == 1 && spotify->last_status >= 200 && spotify->last_status < 300) {
+        snprintf(spotify->message, sizeof(spotify->message),
+                 "Spotify returned no recommendations or songs for this artist.");
+    }
+
+    if (radio->count == 1 && (spotify->last_status < 200 || spotify->last_status >= 300)) {
+        char reason[160];
+        copy_utf8(reason, sizeof(reason), spotify->message);
+        snprintf(spotify->message, sizeof(spotify->message), "Could not load radio songs (HTTP %d): %s",
+                 spotify->last_status, reason);
+    }
+
+    return true;
+}
+
+bool spotify_play_tracks(Spotify *spotify, const Playback *target, const char ids[][23], unsigned count) {
+    char body[sizeof("{\"uris\":[]}") + SONG_RADIO_LIMIT * (sizeof("\"spotify:track:") + sizeof(ids[0]))] =
+        "{\"uris\":[";
+
+    if (!count || count > SONG_RADIO_LIMIT || !ensure_token(spotify)) {
+        return false;
+    }
+
+    for (unsigned i = 0; i < count; ++i) {
+        if (!spotify_id_valid(ids[i])) {
+            return false;
+        }
+
+        char entry[64];
+        snprintf(entry, sizeof(entry), "%s\"spotify:track:%s\"", i ? "," : "", ids[i]);
+        strcat(body, entry);
+    }
+
+    strcat(body, "]}");
+    char url[1024];
+
+    if (!player_command_url(target, "play", url, sizeof(url))) {
+        snprintf(spotify->message, sizeof(spotify->message),
+                 "Choose a Spotify device before starting radio.");
+        return false;
+    }
+
+    HttpResponse response = {0};
+    bool ok = request(spotify, "PUT", url, body, false, &response);
+    response_free(&response);
+    return ok;
+}
+
+static bool valid_track_or_episode_uri(const char *uri, ItemKind *kind_out) {
+    if (!strncmp(uri, "spotify:track:", 14) && spotify_id_valid(uri + 14)) {
+        if (kind_out) {
+            *kind_out = ITEM_TRACK;
+        }
+        return true;
+    }
+
+    if (!strncmp(uri, "spotify:episode:", 16) && spotify_id_valid(uri + 16)) {
+        if (kind_out) {
+            *kind_out = ITEM_EPISODE;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+static bool valid_offset_context_uri(const char *uri) {
+    if (!strncmp(uri, "spotify:playlist:", 17) && spotify_id_valid(uri + 17)) {
+        return true;
+    }
+
+    if (!strncmp(uri, "spotify:album:", 14) && spotify_id_valid(uri + 14)) {
+        return true;
+    }
+
+    return false;
+}
+
+bool spotify_play_restored(Spotify *spotify, const Playback *target, const Playback *restored,
+                           const Queue *queue) {
+    if (!restored || !valid_track_or_episode_uri(restored->uri, NULL) || !ensure_token(spotify)) {
+        return false;
+    }
+
+    char url[1024];
+
+    if (!player_command_url(target, "play", url, sizeof(url))) {
+        snprintf(spotify->message, sizeof(spotify->message),
+                 "This action needs an active, unrestricted Spotify device. Choose one in Devices.");
+        return false;
+    }
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+
+    if (!root) {
+        yyjson_mut_doc_free(doc);
+        return false;
+    }
+
+    if (valid_offset_context_uri(restored->context_uri)) {
+        yyjson_mut_val *offset = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_str(doc, root, "context_uri", restored->context_uri);
+        if (offset) {
+            yyjson_mut_obj_add_str(doc, offset, "uri", restored->uri);
+            yyjson_mut_obj_add_val(doc, root, "offset", offset);
+        }
+    } else {
+        yyjson_mut_val *uris = yyjson_mut_arr(doc);
+        yyjson_mut_arr_add_str(doc, uris, restored->uri);
+
+        if (queue) {
+            for (unsigned i = 0; i < queue->count && i < 20; ++i) {
+                const CatalogItem *item = &queue->items[i];
+
+                if (!item_can_play(item)) {
+                    continue;
+                }
+
+                char quri[64];
+                snprintf(quri, sizeof(quri), "spotify:%s:%s",
+                         item->kind == ITEM_EPISODE ? "episode" : "track", item->id);
+                yyjson_mut_arr_add_strcpy(doc, uris, quri);
+            }
+        }
+
+        yyjson_mut_obj_add_val(doc, root, "uris", uris);
+    }
+
+    if (restored->position_ms > 0) {
+        yyjson_mut_obj_add_uint(doc, root, "position_ms", restored->position_ms);
+    }
+
+    char *body = yyjson_mut_write(doc, 0, NULL);
+    yyjson_mut_doc_free(doc);
+
+    if (!body) {
+        return false;
+    }
+
+    HttpResponse response = {0};
+    bool ok = request(spotify, "PUT", url, body, false, &response);
+    free(body);
+    response_free(&response);
+    return ok;
+}
+
+bool spotify_play_radio(Spotify *spotify, const Playback *target, const CatalogItem *seed, bool play_first) {
+    CatalogItem tracks[BROWSE_PAGE_SIZE];
+    unsigned count = radio_recommendations(spotify, seed, tracks, BROWSE_PAGE_SIZE);
+
+    if (!count) {
+        count = radio_fill_from_search(spotify, seed, tracks, count, BROWSE_PAGE_SIZE);
     }
 
     if (!count) {
@@ -573,32 +945,13 @@ bool spotify_play_radio(Spotify *spotify, const Playback *target, const CatalogI
     }
 
     if (play_first) {
-        char body[1024] = "{\"uris\":[";
+        char ids[BROWSE_PAGE_SIZE][23];
 
         for (unsigned i = 0; i < count; ++i) {
-            char entry[64];
-            snprintf(entry, sizeof(entry), "%s\"spotify:track:%s\"", i ? "," : "", tracks[i].id);
-            strcat(body, entry);
+            memcpy(ids[i], tracks[i].id, sizeof(ids[i]));
         }
 
-        strcat(body, "]}");
-        char url[1024];
-
-        if (!player_command_url(target, "play", url, sizeof(url))) {
-            snprintf(spotify->message, sizeof(spotify->message),
-                     "Choose a Spotify device before starting radio.");
-            return false;
-        }
-
-        HttpResponse response = {0};
-        bool ok = request(spotify, "PUT", url, body, false, &response);
-        response_free(&response);
-
-        if (ok) {
-            snprintf(spotify->message, sizeof(spotify->message), "Playing song radio.");
-        }
-
-        return ok;
+        return spotify_play_tracks(spotify, target, (const char (*)[23])ids, count);
     }
 
     unsigned queued = 0;

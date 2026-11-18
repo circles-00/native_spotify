@@ -1,6 +1,9 @@
 # Desktop UI reference
 
-The target is Spotify's modern desktop visual language, not classic OS widgets.
+The primary layout target is the [1920 × 1200 Spotifast screenshot](https://raw.githubusercontent.com/crmne/spotifast/refs/heads/main/docs/screenshot.png).
+The [launch film](https://spotifast.rocks/assets/videos/launch-film.mp4) supplements it for screens not shown in
+the still (12.8s for Liked Songs, 18.6s for the queue). The UI is dark only.
+Use live account content and controls backed by this client, not sample account data or a simulated spectrum.
 The application remains native C with GDI on Windows and Cairo/Pango on Linux.
 
 References fetched and visually inspected during implementation:
@@ -15,9 +18,11 @@ References fetched and visually inspected during implementation:
   (fetched and inspected: All/Songs/Artists/Albums chips, top-result card beside
   four songs, circular artist covers and album shelves).
 
-Match the black outer chrome, #121212 split panes, 8px panel gaps/radii, compact
-library rail, pill-shaped controls/search, bold geometric typography, artwork-led
-cards, dense track table and persistent bottom player. Following user feedback,
+Match the sampled charcoal palette, Home/Search/Library rail, compact search pill,
+two-column shortcuts with the queue open, artwork shelves, flush queue and bottom
+transport. Use the shared dark palette in `src/ui/dark_palette.h`. The reference
+viewport is 1280 × 800 logical units at 150% scale.
+Following user feedback,
 navigation is immediate with no crossfade, retained page, card lift or sliding play
 button. Hover colors settle in 55ms on enter and 35ms on leave. Timers stop when hover effects settle; idle
 does not run a permanent render loop. Windows text is composited at native
@@ -25,15 +30,14 @@ resolution separately from supersampled shapes/artwork.
 Both passes are assembled off-screen and presented with one final window blit;
 never present a textless intermediate frame during hover redraws.
 
-Home uses scrollable recent-album shortcuts and saved collection shelves, not
-height-compressed cards. The recent albums come from the documented recently
+Home uses Liked Songs and playlist shortcuts, with separate playlist, recent
+album, and saved album shelves. The recent albums come from the documented recently
 played endpoint, not a reconstruction of Spotify's private Home feed. Artist
 cards open album/single browsing; only song selection or explicit player controls
-start playback. Queue and Now Playing have toggleable native side panels. Friends
+start playback. Queue and Devices have toggleable native side panels. Friends
 and Lyrics toggles show their public-API limitation rather than invented content.
 
-Fira Sans is bundled under its included OFL license as a freely distributable
-typographic substitute. Spotify Mix and Spotify's private Home/recommendation
+Inter is bundled under its included OFL license. Spotify Mix and Spotify's private Home/recommendation
 feed are not bundled or reproduced. Gradient collection icons are fallbacks;
 album/playlist/player artwork loads through bounded native decoders. Do not
 insert fictitious listening history or claim pixel-identical parity.
@@ -41,4 +45,12 @@ insert fictitious listening history or claim pixel-identical parity.
 Shared layout, drawing commands, hit testing and animation state live in
 `src/ui/scene*`, `src/ui/controller.c` and `src/ui/icons.c`. The platform
 adapters in `src/platform/` render these directly with OS-native drawing,
-including the custom-drawn search pill on both Windows and Linux.
+including the custom-drawn search pill (with clear control when non-empty)
+on both Windows and Linux.
+
+Rounded fills and artwork use the same radius contract (`src/ui/canvas.h`). Art
+is center-cropped and mapped directly into the rounded shape, without a second
+coincident clip. Cairo uses an antialiased fill path; the Windows DIB rasterizer
+integrates subpixel spans and intersects clip geometry before blending. Neither
+uses a hard-edged region for rounded artwork. Active sidebar/queue/player
+controls use Spotify green `#1ed760` without permanent rest timers.

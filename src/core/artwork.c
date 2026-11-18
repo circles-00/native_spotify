@@ -4,31 +4,78 @@
 #include <stdlib.h>
 #include <string.h>
 
-bool artwork_url_valid(const char *url) {
-    static const char *prefixes[] = {"https://i.scdn.co/image/", "https://mosaic.scdn.co/"};
+static bool valid_host(const char *host, size_t len) {
+    static const char *const suffixes[] = {".scdn.co", ".spotifycdn.com"};
 
-    if (!url || strlen(url) >= ARTWORK_URL_CAPACITY) {
+    if (!len || len >= 128 || host[0] == '.' || host[0] == '-' || host[len - 1] == '.' ||
+        host[len - 1] == '-') {
         return false;
     }
 
-    for (unsigned i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
-        size_t prefix = strlen(prefixes[i]);
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char ch = (unsigned char)host[i];
+        bool ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '.';
 
-        if (strncmp(url, prefixes[i], prefix) || !url[prefix]) {
-            continue;
+        if (!ok || (ch == '.' && host[i + 1] == '.')) {
+            return false;
         }
+    }
 
-        for (const char *p = url + prefix; *p; ++p) {
-            if (!(*p >= 'a' && *p <= 'z') && !(*p >= 'A' && *p <= 'Z') && !(*p >= '0' && *p <= '9') &&
-                *p != '-' && *p != '_' && *p != '/') {
-                return false;
-            }
+    for (unsigned i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
+        size_t slen = strlen(suffixes[i]);
+
+        if (len > slen && !memcmp(host + len - slen, suffixes[i], slen)) {
+            return true;
         }
-
-        return true;
     }
 
     return false;
+}
+
+bool artwork_url_valid(const char *url) {
+    static const char https[] = "https://";
+
+    if (!url || strlen(url) >= ARTWORK_URL_CAPACITY || strncmp(url, https, sizeof(https) - 1)) {
+        return false;
+    }
+
+    const char *host = url + sizeof(https) - 1;
+    const char *slash = strchr(host, '/');
+
+    if (!slash || !valid_host(host, (size_t)(slash - host))) {
+        return false;
+    }
+
+    const char *path = slash + 1;
+    size_t plen = strlen(path);
+
+    if (!plen || path[plen - 1] == '/') {
+        return false;
+    }
+
+    const char *seg = path;
+
+    for (size_t i = 0; i <= plen; ++i) {
+        char ch = path[i];
+
+        if (ch == '/' || ch == 0) {
+            size_t slen = (size_t)(&path[i] - seg);
+
+            if (!slen || (slen == 1 && seg[0] == '.') || (slen == 2 && seg[0] == '.' && seg[1] == '.')) {
+                return false;
+            }
+
+            seg = &path[i + 1];
+            continue;
+        }
+
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' ||
+              ch == '_' || ch == '.' || ch == '~')) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void artwork_url_parse(yyjson_val *images, char out[ARTWORK_URL_CAPACITY]) {
@@ -78,7 +125,8 @@ bool artwork_fetch(const char *url, Image *image, unsigned *retry_after) {
         *retry_after = response.retry_after;
     }
 
-    bool ok = fetched && response.status == 200 && platform_image_decode(response.body, response.size, image);
+    bool ok = fetched && response.status == 200 && response.size <= ARTWORK_HTTP_LIMIT &&
+              platform_image_decode(response.body, response.size, image);
     free(response.body);
 
     if (!ok) {

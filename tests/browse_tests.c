@@ -29,8 +29,9 @@ static void test_urls(void) {
     char url[1200];
 
     CHECK(browse_url(&request, url, sizeof(url)));
-    CHECK(!strcmp(url, "https://api.spotify.com/v1/"
-                       "search?type=track,artist,album&q=Bj%C3%B6rk%20%26%20year%3A1997&limit=10&offset=0"));
+    CHECK(!strcmp(
+        url, "https://api.spotify.com/v1/"
+             "search?type=track,artist,album,playlist&q=Bj%C3%B6rk%20%26%20year%3A1997&limit=10&offset=0"));
     CHECK(!browse_url(&request, url, 8));
 
     request.offset = 1001;
@@ -245,53 +246,67 @@ static void test_input(void) {
 
 static void test_cache(void) {
     BrowseCache cache = {0};
-    BrowseRequest request = {.kind = BROWSE_SEARCH, .query = "query 0"};
+    BrowseRequest library = {.kind = BROWSE_SAVED_TRACKS};
     BrowsePage page = {.count = 1, .limit = BROWSE_PAGE_SIZE, .total = 1};
     snprintf(page.items[0].title, sizeof(page.items[0].title), "Cached fixture track");
     BrowsePage cached;
-    CHECK(!browse_cache_get(&cache, &request, 1000, &cached));
-    browse_cache_store(&cache, &request, &page, 1000);
-    CHECK(browse_cache_get(&cache, &request, 1001, &cached));
+    CHECK(!browse_cache_get(&cache, &library, 1000, &cached));
+    browse_cache_store(&cache, &library, &page, 1000);
+    CHECK(browse_cache_get(&cache, &library, 1001, &cached));
     CHECK(cached.count == 1 && !strcmp(cached.items[0].title, "Cached fixture track"));
-    CHECK(!browse_cache_get(&cache, &request, 999, &cached));
-    CHECK(!browse_cache_get(&cache, &request, 1000 + BROWSE_CACHE_TTL_MS, &cached));
+    CHECK(!browse_cache_get(&cache, &library, 999, &cached));
+    CHECK(!browse_cache_get(&cache, &library, 1000 + BROWSE_CACHE_TTL_MS, &cached));
 
-    for (unsigned i = 0; i < BROWSE_CACHE_LIMIT; ++i) {
-        snprintf(request.query, sizeof(request.query), "query %u", i);
+    BrowseRequest request = {.kind = BROWSE_ALBUM_TRACKS};
+
+    for (unsigned i = 0; i < BROWSE_CACHE_LIMIT - BROWSE_CACHE_LIBRARY_SLOTS; ++i) {
+        snprintf(request.id, sizeof(request.id), "%022u", i);
         browse_cache_store(&cache, &request, &page, 1000);
     }
 
-    snprintf(request.query, sizeof(request.query), "query 0");
+    snprintf(request.id, sizeof(request.id), "%022u", 0u);
     CHECK(browse_cache_get(&cache, &request, 1002, &cached));
-    snprintf(request.query, sizeof(request.query), "new query");
+    snprintf(request.id, sizeof(request.id), "%022u", 99u);
     browse_cache_store(&cache, &request, &page, 1002);
-    snprintf(request.query, sizeof(request.query), "query 0");
+    snprintf(request.id, sizeof(request.id), "%022u", 0u);
     CHECK(browse_cache_get(&cache, &request, 1003, &cached));
-    snprintf(request.query, sizeof(request.query), "query 1");
+    snprintf(request.id, sizeof(request.id), "%022u", 1u);
     CHECK(!browse_cache_get(&cache, &request, 1003, &cached));
-    request.kind = BROWSE_SAVED_TRACKS;
-    CHECK(!browse_cache_get(&cache, &request, 1003, &cached));
-    browse_cache_store(&cache, &request, &page, 1003);
-    request.offset = 10;
-    CHECK(!browse_cache_get(&cache, &request, 1003, &cached));
-    request.offset = 0;
+    CHECK(browse_cache_get(&cache, &library, 1003, &cached));
+
+    BrowseRequest uncached[] = {{.kind = BROWSE_SEARCH, .query = "one-off search"},
+                                {.kind = BROWSE_QUEUE},
+                                {.kind = BROWSE_SAVED_TRACKS, .offset = 10},
+                                {.kind = BROWSE_FOLLOWED_ARTISTS, .after = ID}};
+
+    for (unsigned i = 0; i < sizeof(uncached) / sizeof(*uncached); ++i) {
+        page.offset = uncached[i].offset;
+        browse_cache_store(&cache, &uncached[i], &page, 1003);
+        CHECK(!browse_cache_get(&cache, &uncached[i], 1004, &cached));
+    }
+
+    page.offset = 0;
     page.count = BROWSE_PAGE_SIZE + 1;
-    browse_cache_store(&cache, &request, &page, 1004);
-    CHECK(browse_cache_get(&cache, &request, 1005, &cached) && cached.count == 1);
-    memset(&cache, 0, sizeof(cache));
-    CHECK(!browse_cache_get(&cache, &request, 1005, &cached));
+    browse_cache_store(&cache, &library, &page, 1004);
+    CHECK(browse_cache_get(&cache, &library, 1005, &cached) && cached.count == 1);
+    browse_cache_invalidate(&cache, &library);
+    CHECK(!browse_cache_get(&cache, &library, 1005, &cached));
 }
 
 static void test_search_sections(void) {
     BrowseRequest request = {.kind = BROWSE_SEARCH, .query = "label:stereofox"};
     BrowsePage page;
-    CHECK(browse_parse("{\"tracks\":{" PAGING ",\"items\":[" TRACK "]},"
-                       "\"artists\":{\"items\":[{\"type\":\"artist\",\"id\":\"" ID
-                       "\",\"name\":\"Artist\"}]},"
-                       "\"albums\":{\"items\":[{\"type\":\"album\",\"id\":\"" ID "\",\"name\":\"Album\"}]}}",
-                       &request, &page));
-    CHECK(page.count == 1 && page.artist_count == 1 && page.album_count == 1);
-    CHECK(page.artists[0].kind == ITEM_ARTIST && page.albums[0].kind == ITEM_ALBUM);
+    CHECK(browse_parse(
+        "{\"tracks\":{" PAGING ",\"items\":[" TRACK "]},"
+        "\"artists\":{\"items\":[{\"type\":\"artist\",\"id\":\"" ID "\",\"name\":\"Artist\"}]},"
+        "\"albums\":{\"items\":[{\"type\":\"album\",\"id\":\"" ID "\",\"name\":\"Album\"}]},"
+        "\"playlists\":{\"items\":[null,{\"type\":\"playlist\",\"id\":\"" ID
+        "\",\"name\":\"Playlist\",\"owner\":{\"id\":\"spotify\",\"display_name\":\"Spotify\"}}]}}",
+        &request, &page));
+    CHECK(page.count == 1 && page.artist_count == 1 && page.album_count == 1 && page.playlist_count == 1);
+    CHECK(page.artists[0].kind == ITEM_ARTIST && page.albums[0].kind == ITEM_ALBUM &&
+          page.playlists[0].kind == ITEM_PLAYLIST);
+    CHECK(!strcmp(page.playlists[0].owner_id, "spotify") && !strcmp(page.playlists[0].detail, "Spotify"));
     char body[256];
     CHECK(item_context_body(&page.artists[0], &request, body, sizeof(body)));
     CHECK(!strcmp(body, "{\"context_uri\":\"spotify:artist:" ID "\"}"));
@@ -310,8 +325,111 @@ static void test_search_sections(void) {
     CHECK(browse_url(&request, url, sizeof(url)) && strstr(url, "type=album&"));
     request.filter = SEARCH_SONGS;
     CHECK(browse_url(&request, url, sizeof(url)) && strstr(url, "type=track&"));
+    request.filter = SEARCH_PLAYLISTS;
+    CHECK(browse_url(&request, url, sizeof(url)) && strstr(url, "type=playlist&"));
+    CHECK(browse_parse("{\"playlists\":{" PAGING ",\"items\":[null,{\"type\":\"playlist\",\"id\":\"" ID
+                       "\",\"name\":\"Chill Mix\",\"owner\":{\"display_name\":\"Spotify\"}}]}}",
+                       &request, &page));
+    CHECK(page.count == 1 && page.items[0].kind == ITEM_PLAYLIST &&
+          !strcmp(page.items[0].title, "Chill Mix"));
     request.filter = (SearchFilter)99;
     CHECK(!browse_url(&request, url, sizeof(url)));
+}
+
+static void test_search_top_context(void) {
+    CatalogItem tracks[3] = {
+        {.kind = ITEM_TRACK,
+         .id = "0123456789abcdefghijk1",
+         .title = "Army of Me",
+         .detail = "Björk",
+         .album_id = "0123456789abcdefghija1",
+         .album_title = "Post",
+         .popularity = 65},
+        {.kind = ITEM_TRACK,
+         .id = "0123456789abcdefghijk2",
+         .title = "Jóga",
+         .detail = "Björk",
+         .album_id = "0123456789abcdefghija2",
+         .album_title = "Homogenic",
+         .popularity = 64},
+        {.kind = ITEM_TRACK,
+         .id = "0123456789abcdefghijk3",
+         .title = "Bohemian Rhapsody - Remastered 2011",
+         .detail = "Queen",
+         .album_id = "0123456789abcdefghija3",
+         .album_title = "A Night at the Opera",
+         .popularity = 88},
+    };
+    CatalogItem artists[2] = {
+        {.kind = ITEM_ARTIST, .id = "0123456789abcdefghijb1", .title = "Björk", .popularity = 72},
+        {.kind = ITEM_ARTIST, .id = "0123456789abcdefghijb2", .title = "Bohemian Rhapsody", .popularity = 4},
+    };
+    CatalogItem albums[2] = {
+        {.kind = ITEM_ALBUM,
+         .id = "0123456789abcdefghija2",
+         .title = "Homogenic",
+         .detail = "Björk",
+         .album_type = "album"},
+        {.kind = ITEM_ALBUM,
+         .id = "0123456789abcdefghija4",
+         .title = "Jóga",
+         .detail = "Björk",
+         .album_type = "single"},
+    };
+    CatalogItem playlists[2] = {
+        {.kind = ITEM_PLAYLIST,
+         .id = "0123456789abcdefghijp1",
+         .title = "lofi beats",
+         .detail = "Spotify",
+         .owner_id = "spotify"},
+        {.kind = ITEM_PLAYLIST,
+         .id = "0123456789abcdefghijp2",
+         .title = "Björk",
+         .detail = "Listener",
+         .owner_id = "user123"},
+    };
+
+    /* Artist query picks the artist over tracks and user playlists with the same name. */
+    const CatalogItem *top = browse_search_top("bjork", tracks, 3, artists, 2, albums, 2, playlists, 2);
+    CHECK(top == &artists[0]);
+
+    /* Song query picks the song (even with Remastered suffix) over an obscure homonym artist. */
+    top = browse_search_top("Bohemian Rhapsody", tracks, 3, artists, 2, albums, 2, playlists, 2);
+    CHECK(top == &tracks[2]);
+
+    /* Song + artist query picks the track over the artist, even when the track is not index 0. */
+    top = browse_search_top("joga bjork", tracks, 3, artists, 2, albums, 2, playlists, 2);
+    CHECK(top == &tracks[1]);
+
+    /* Single wrapper album with same name as a song loses to the song itself. */
+    top = browse_search_top("Jóga", tracks + 1, 1, artists, 1, albums + 1, 1, playlists, 0);
+    CHECK(top == &tracks[1]);
+
+    /* Album query with album tracks in context picks the album. */
+    top = browse_search_top("Homogenic Björk", tracks, 3, artists, 1, albums, 2, playlists, 2);
+    CHECK(top == &albums[0]);
+
+    /* Playlist query picks the playlist over unrelated artists/tracks. */
+    top = browse_search_top("lofi beats", tracks, 3, artists, 2, albums, 2, playlists, 2);
+    CHECK(top == &playlists[0]);
+
+    /* Explicit operators route context cleanly. */
+    top = browse_search_top("album:Post", tracks, 3, artists, 2, albums, 2, playlists, 2);
+    CHECK(top == &albums[0] || top == &tracks[0]);
+    top = browse_search_top("artist:Bohemian Rhapsody", tracks, 3, artists, 2, albums, 2, playlists, 2);
+    CHECK(top == &artists[1]);
+    top = browse_search_top("label:stereofox", tracks, 3, artists, 2, albums, 2, playlists, 2);
+    CHECK(top == &tracks[0]);
+
+    /* Guest artist match works for featured collaborators. */
+    CatalogItem collab = {.kind = ITEM_TRACK,
+                          .id = "0123456789abcdefghijk9",
+                          .title = "Get Lucky",
+                          .detail = "Daft Punk",
+                          .guest_artists = "Pharrell Williams Nile Rodgers"};
+    CatalogItem daft = {.kind = ITEM_ARTIST, .id = "0123456789abcdefghijb9", .title = "Daft Punk"};
+    top = browse_search_top("get lucky pharrell", &collab, 1, &daft, 1, NULL, 0, NULL, 0);
+    CHECK(top == &collab);
 }
 
 static void test_collection_browsing_and_history(void) {
@@ -418,6 +536,45 @@ static void test_collection_browsing_and_history(void) {
           profile.followers_known && profile.followers == 7);
 }
 
+static void test_full_track_lists(void) {
+    BrowseRequest playlist = {.kind = BROWSE_PLAYLIST_TRACKS, .id = "0123456789abcdefghijkl", .offset = 50};
+    char url[256];
+    CHECK(browse_tracks_url(&playlist, url, sizeof(url)));
+    CHECK(!strcmp(url, "https://api.spotify.com/v1/playlists/0123456789abcdefghijkl/items?limit=50&offset=50"));
+
+    BrowseRequest liked = {.kind = BROWSE_SAVED_TRACKS};
+    CHECK(browse_tracks_url(&liked, url, sizeof(url)) && strstr(url, "me/tracks?limit=50&offset=0"));
+    CHECK(!browse_tracks_url(&(BrowseRequest){.kind = BROWSE_SEARCH}, url, sizeof(url)));
+
+    // A local file has no Spotify id: it is skipped but still advances the offset.
+    const char *json =
+        "{\"items\":[{\"item\":{\"type\":\"track\",\"id\":\"0123456789abcdefghijk1\",\"name\":\"One\","
+        "\"artists\":[{\"name\":\"A\"}],\"duration_ms\":1000}},{\"item\":null},"
+        "{\"track\":{\"type\":\"track\",\"id\":\"0123456789abcdefghijk2\",\"name\":\"Two\","
+        "\"artists\":[{\"name\":\"B\"}],\"duration_ms\":2000}}],"
+        "\"total\":120,\"offset\":50,\"limit\":50,\"next\":\"https://api.spotify.com/next\"}";
+    TrackPage *page = malloc(sizeof(*page));
+    CHECK(page != NULL);
+    CHECK(browse_parse_tracks(json, &playlist, page));
+    CHECK(page->count == 2 && page->scanned == 3 && page->total == 120 && page->has_next);
+    CHECK(!strcmp(page->items[1].title, "Two"));
+    ++playlist.offset;
+    CHECK(!browse_parse_tracks(json, &playlist, page));
+    CHECK(!browse_parse_tracks("{\"items\":{}}", &playlist, page));
+    free(page);
+
+    // Liked Songs play as the account's Liked Songs context starting at the chosen song.
+    CatalogItem song = {.kind = ITEM_TRACK, .id = "0123456789abcdefghijk1", .playable = true};
+    BrowseRequest context = {.kind = BROWSE_SAVED_TRACKS, .owner_id = "listener.name"};
+    char body[256];
+    CHECK(item_context_body(&song, &context, body, sizeof(body)));
+    CHECK(!strcmp(body, "{\"context_uri\":\"spotify:user:listener.name:collection\","
+                        "\"offset\":{\"uri\":\"spotify:track:0123456789abcdefghijk1\"}}"));
+    CHECK(!browse_user_id_valid("bad\"id") && !browse_user_id_valid(""));
+    snprintf(context.owner_id, sizeof(context.owner_id), "bad\"id");
+    CHECK(item_context_body(&song, &context, body, sizeof(body)) && !strstr(body, "collection"));
+}
+
 int main(void) {
     test_urls();
     test_parsing();
@@ -425,7 +582,9 @@ int main(void) {
     test_input();
     test_cache();
     test_search_sections();
+    test_search_top_context();
     test_collection_browsing_and_history();
+    test_full_track_lists();
 
     printf("PASS: %u browse checks (URLs, pages, UTF-8, selection, pagination, drill-down, playback body)\n",
            checks);

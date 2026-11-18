@@ -7,8 +7,18 @@
 
 typedef struct WindowsTextBatch WindowsTextBatch;
 
+typedef struct {
+    HDC dc;
+    HBITMAP bitmap;
+    HGDIOBJ previous;
+    uint32_t *pixels;
+    int width, height;
+} WindowsBuffer;
+
 typedef struct WindowsCanvas {
     HDC paint;
+    uint32_t *pixels;
+    int width, height;
     float scale;
     HFONT fonts[80][2];
     HDC retained;
@@ -22,11 +32,14 @@ typedef struct WindowsCanvas {
     HBITMAP frame_image;
     HGDIOBJ frame_original;
     int frame_width, frame_height;
-    RasterRoundClip clips[8];
+    RasterRoundClip clips[RASTER_CLIP_LIMIT];
     unsigned clip_depth;
 } WindowsCanvas;
 
-void windows_canvas_begin(WindowsCanvas *backend, HDC paint, float scale, Canvas *canvas);
+bool windows_buffer_resize(WindowsBuffer *buffer, HDC compatible, int width, int height);
+void windows_buffer_destroy(WindowsBuffer *buffer);
+void windows_canvas_begin(WindowsCanvas *backend, const WindowsBuffer *buffer, float scale, Canvas *canvas);
+bool windows_canvas_paint_image(WindowsCanvas *backend, const Image *image, Rect rect, float radius);
 void windows_canvas_destroy(WindowsCanvas *backend);
 void windows_canvas_defer_text(WindowsCanvas *backend, WindowsCanvas *target);
 void windows_canvas_flush_text(WindowsCanvas *backend);

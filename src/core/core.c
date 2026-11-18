@@ -350,6 +350,8 @@ bool playback_parse(const char *json, Playback *playback) {
         yyjson_val *item = yyjson_obj_get(root, "item");
         const char *uri = yyjson_get_str(yyjson_obj_get(item, "uri"));
         copy_utf8(playback->uri, sizeof(playback->uri), uri ? uri : "");
+        const char *context_uri = yyjson_get_str(yyjson_obj_get(yyjson_obj_get(root, "context"), "uri"));
+        copy_utf8(playback->context_uri, sizeof(playback->context_uri), context_uri ? context_uri : "");
         const char *type = yyjson_get_str(yyjson_obj_get(item, "type"));
         artwork_url_parse(
             yyjson_obj_get(type && !strcmp(type, "episode") ? item : yyjson_obj_get(item, "album"), "images"),

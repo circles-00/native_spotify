@@ -1,160 +1,183 @@
 #include "home_scene.h"
+#include "dark_palette.h"
 
-static void label(Canvas *canvas, const char *value, Rect rect, float size, bool bold, Color color) {
-    canvas->text(canvas->context, value, rect, size, bold ? TEXT_BOLD : 0, color);
+#include <time.h>
+
+static void label(Canvas *canvas, const char *value, Rect rect, float size, unsigned style, Color color) {
+    canvas->text(canvas->context, value, rect, size, style | TEXT_VCENTER, color);
 }
 
 static void place(Scene *scene, HitId id, Rect rect) {
     scene->hits[id] =
-        (Hit){rect, rect.y + rect.h > scene->content.y + 56 && rect.y < scene->content.y + scene->content.h};
+        (Hit){rect, rect.y + rect.h > scene->content.y && rect.y < scene->content.y + scene->content.h};
+}
+
+static unsigned quick_count(const View *view) {
+    unsigned playlists = view->library[2].count;
+
+    if (!playlists) {
+        return 4;
+    }
+
+    return playlists < 7 ? playlists + 1 : 8;
 }
 
 void home_scene_layout(Scene *scene, const View *view) {
-    float width = scene->content.w - 48;
-    unsigned columns = scene_columns(scene->content.w);
-    unsigned quick_columns = width >= 800 ? 4 : 2;
-    unsigned quick_count = view->recent_count ? view->recent_count : 4;
-    unsigned quick_rows = (quick_count + quick_columns - 1) / quick_columns;
-    float card = (width - (columns - 1) * 16) / columns;
-    float album_height = view->library[1].count ? card + 72 : 44;
-    float playlist_height = view->library[2].count ? card + 72 : 44;
-    float albums_y = 68 + 68 + quick_rows * 62 + 22;
-    float playlists_y = albums_y + 38 + album_height + 24;
-    scene->home_extent = playlists_y + 38 + playlist_height + 20;
+    float x = scene->content.x + 21;
+    float width = scene->content.w - 42;
+    unsigned columns = width >= 900 ? 4 : 2;
+    unsigned count = quick_count(view);
+    float tile = (width - (columns - 1) * 9) / columns;
+    float shelf_y = 58 + ((count + columns - 1) / columns) * 59 + 18;
+    unsigned shelf_columns = (unsigned)((width + 16) / 153);
+
+    if (shelf_columns < 2) {
+        shelf_columns = 2;
+    }
+
+    if (shelf_columns > HOME_SHELF_COLUMNS) {
+        shelf_columns = HOME_SHELF_COLUMNS;
+    }
+
+    float card = (width - (shelf_columns - 1) * 10) / shelf_columns;
+
+    if (card > 149) {
+        card = 149;
+    }
+    float headings[3];
+
+    for (unsigned shelf = 0; shelf < 3; ++shelf) {
+        headings[shelf] = shelf_y;
+        shelf_y += scene_home_item(view, shelf * HOME_SHELF_COLUMNS) ? card + 103 : 60;
+    }
+
+    scene->home_extent = shelf_y;
     scroll_layout(&scene->main_scroll, scene->home_extent, scene->content.h);
     scene->home_scroll = scene->main_scroll.offset;
-
-    float x = scene->content.x + 24;
     float y = scene->content.y - scene->home_scroll;
-    scene->hits[HIT_ALL] = (Hit){{x, scene->content.y + 14, 44, 30}, true};
-    scene->hits[HIT_MUSIC] = (Hit){{x + 52, scene->content.y + 14, 72, 30}, true};
 
     if (view->recent_permission_required) {
-        place(scene, HIT_HOME_HISTORY, (Rect){x + width - 200, y + 72, 200, 30});
+        place(scene, HIT_HOME_HISTORY, (Rect){x + width - 168, y + 14, 168, 28});
     }
 
-    float quick_width = (width - (quick_columns - 1) * 8) / quick_columns;
-
-    for (unsigned i = 0; i < quick_count; ++i) {
+    for (unsigned i = 0; i < count; ++i) {
         place(scene, (HitId)(HIT_HOME_QUICK_FIRST + i),
-              (Rect){x + (i % quick_columns) * (quick_width + 8), y + 136 + (i / quick_columns) * 62,
-                     quick_width, 54});
+              (Rect){x + i % columns * (tile + 9), y + 58 + i / columns * 59, tile, 53});
     }
 
-    place(scene, HIT_HOME_ALBUMS, (Rect){x + width - 80, y + albums_y, 80, 28});
-    place(scene, HIT_HOME_PLAYLISTS, (Rect){x + width - 80, y + playlists_y, 80, 28});
+    const HitId headings_ids[] = {scene_home_made_for_you(view) ? HIT_NONE : HIT_HOME_PLAYLISTS, HIT_NONE,
+                                  HIT_HOME_ALBUMS};
 
-    for (unsigned i = 0; i < columns; ++i) {
-        if (i < view->library[1].count) {
-            place(scene, (HitId)(HIT_CARD_FIRST + i),
-                  (Rect){x + i * (card + 16), y + albums_y + 38, card, card + 72});
+    for (unsigned shelf = 0; shelf < 3; ++shelf) {
+        scene->home_headings[shelf] = y + headings[shelf];
+
+        if (headings_ids[shelf] != HIT_NONE) {
+            place(scene, headings_ids[shelf], (Rect){x + width - 72, y + headings[shelf], 72, 24});
         }
 
-        if (i < view->library[2].count) {
-            place(scene, (HitId)(HIT_CARD_FIRST + 5 + i),
-                  (Rect){x + i * (card + 16), y + playlists_y + 38, card, card + 72});
+        for (unsigned i = 0; i < shelf_columns; ++i) {
+            unsigned index = shelf * HOME_SHELF_COLUMNS + i;
+
+            if (scene_home_item(view, index)) {
+                place(scene, (HitId)(HIT_CARD_FIRST + index),
+                      (Rect){x + i * (card + 10), y + headings[shelf] + 31, card, card + 44});
+            }
         }
     }
 }
 
 static void cover(Canvas *canvas, const CatalogItem *item, Rect rect, Icon fallback) {
-    canvas->clip(canvas->context, rect, 4);
+    if (!canvas_artwork(canvas, item ? item->artwork : NULL, rect, 6)) {
+        if (fallback == ICON_HEART) {
+            canvas->gradient(canvas->context, rect, 6, 0x4e21dc, 0xb5e2d5);
+        } else {
+            canvas->box(canvas->context, rect, 6, DARK_HOVER);
+        }
 
-    if (!item || !canvas->image(canvas->context, item->artwork, rect)) {
-        canvas->box(canvas->context, rect, 4, 0x264b3b);
+        float size = rect.w <= 53 ? 23 : 34;
         canvas_icon(canvas, fallback,
-                    (Rect){rect.x + rect.w * .3f, rect.y + rect.h * .3f, rect.w * .4f, rect.h * .4f},
-                    0xffffff);
+                    (Rect){rect.x + (rect.w - size) / 2, rect.y + (rect.h - size) / 2, size, size},
+                    DARK_TEXT);
     }
-
-    canvas->unclip(canvas->context);
 }
 
 void home_scene_draw(Scene *scene, const View *view, Canvas *canvas) {
     Rect bounds = scene->content;
-    float x = bounds.x + 24;
-    float width = bounds.w - 48;
+    float x = bounds.x + 21;
+    float width = bounds.w - 42;
     float y = bounds.y - scene->home_scroll;
-    unsigned quick_columns = width >= 800 ? 4 : 2;
-    unsigned quick_count = view->recent_count ? view->recent_count : 4;
-    unsigned rows = (quick_count + quick_columns - 1) / quick_columns;
-    unsigned columns = scene_columns(scene->content.w);
-    float card = (width - (columns - 1) * 16) / columns;
-    float albums_y = y + 68 + 68 + rows * 62 + 22;
-    float playlists_y = albums_y + 38 + (view->library[1].count ? card + 72 : 44) + 24;
-    canvas->clip(canvas->context, (Rect){bounds.x, bounds.y + 56, bounds.w, bounds.h - 56}, 0);
-    canvas->gradient(canvas->context, (Rect){bounds.x, y + 56, bounds.w, 176}, 0, 0x234637, 0x121212);
-    label(canvas, view->recent_count ? "Jump back in" : "Find your next listen",
-          (Rect){x, y + 68, width - 210, 34}, 24, true, 0xffffff);
-    label(canvas,
-          view->recent_count ? "Albums from your recent listening"
-                             : "Search for music, or pick a collection to explore.",
-          (Rect){x, y + 104, width, 22}, 13, false, 0xb3b3b3);
+    time_t now = time(NULL);
+    struct tm *local = localtime(&now);
+    int hour = local ? local->tm_hour : 12;
+    const char *greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+    label(canvas, greeting, (Rect){x, y + 6, width - (view->recent_permission_required ? 176 : 0), 38}, 27,
+          TEXT_BOLD, DARK_TEXT);
 
     if (scene->hits[HIT_HOME_HISTORY].enabled) {
         Rect rect = scene->hits[HIT_HOME_HISTORY].rect;
-        canvas->box(canvas->context, rect, 15, 0x282828);
-        canvas->text(canvas->context, "Enable recently played", rect, 12, TEXT_CENTER | TEXT_VCENTER,
-                     0xffffff);
+        canvas->box(canvas->context, rect, 14,
+                    color_mix(DARK_TILE, DARK_HOVER, scene->hover[HIT_HOME_HISTORY]));
+        label(canvas, "Enable recently played", rect, 12, TEXT_CENTER, DARK_TEXT);
     }
 
     static const char *shortcuts[] = {"Liked Songs", "Albums", "Playlists", "Search"};
     static const Icon icons[] = {ICON_HEART, ICON_ALBUM, ICON_PLAYLIST, ICON_SEARCH};
 
-    for (unsigned i = 0; i < quick_count; ++i) {
+    for (unsigned i = 0; i < quick_count(view); ++i) {
         HitId id = (HitId)(HIT_HOME_QUICK_FIRST + i);
-        Rect rect = scene->hits[id].rect;
-        const CatalogItem *item = view->recent_count ? &view->recent[i] : NULL;
-        canvas->box(canvas->context, rect, 5, color_mix(0x263b31, 0x385246, scene->hover[id]));
-        cover(canvas, item, (Rect){rect.x, rect.y, 54, 54}, item ? ICON_ALBUM : icons[i]);
-        canvas->text(canvas->context, item ? item->title : shortcuts[i],
-                     (Rect){rect.x + 66, rect.y + 6, rect.w - 76, 42}, 13, TEXT_BOLD | TEXT_VCENTER,
-                     0xffffff);
-    }
 
-    label(canvas, "Your saved albums", (Rect){x, albums_y, width - 96, 30}, 20, true, 0xffffff);
-    label(canvas, "Your playlists", (Rect){x, playlists_y, width - 96, 30}, 20, true, 0xffffff);
-    canvas->text(canvas->context, "Show all", scene->hits[HIT_HOME_ALBUMS].rect, 12,
-                 TEXT_CENTER | TEXT_VCENTER, 0xb3b3b3);
-    canvas->text(canvas->context, "Show all", scene->hits[HIT_HOME_PLAYLISTS].rect, 12,
-                 TEXT_CENTER | TEXT_VCENTER, 0xb3b3b3);
-
-    if (!view->library[1].count) {
-        label(canvas, "Saved albums will appear here.", (Rect){x, albums_y + 38, width, 24}, 13, false,
-              0xb3b3b3);
-    }
-
-    if (!view->library[2].count) {
-        label(canvas, "Your playlists will appear here.", (Rect){x, playlists_y + 38, width, 24}, 13, false,
-              0xb3b3b3);
-    }
-
-    for (unsigned i = 0; i < 10; ++i) {
-        HitId id = (HitId)(HIT_CARD_FIRST + i);
-        Rect rect = scene->hits[id].rect;
-        const CatalogItem *item = scene_home_item(view, i);
-
-        if (!item || rect.w <= 0 || rect.y >= bounds.y + bounds.h || rect.y + rect.h <= bounds.y + 56) {
+        if (!scene->hits[id].enabled) {
             continue;
         }
 
-        canvas->box(canvas->context, rect, 6, color_mix(0x181818, 0x282828, scene->hover[id]));
-        cover(canvas, item, (Rect){rect.x + 10, rect.y + 10, rect.w - 20, rect.w - 20},
-              i < 5 ? ICON_ALBUM : ICON_PLAYLIST);
-        label(canvas, item->title, (Rect){rect.x + 10, rect.y + rect.w + 2, rect.w - 20, 22}, 14, true,
-              0xffffff);
-        label(canvas, item->detail, (Rect){rect.x + 10, rect.y + rect.w + 26, rect.w - 20, 20}, 12, false,
-              0xb3b3b3);
+        Rect rect = scene->hits[id].rect;
+        const CatalogItem *item = scene_home_quick_item(view, i);
+        canvas->box(canvas->context, rect, 6, color_mix(DARK_TILE, DARK_HOVER, scene->hover[id]));
+        cover(canvas, item, (Rect){rect.x, rect.y, 53, 53}, item ? ICON_PLAYLIST : icons[i < 4 ? i : 2]);
+        label(canvas, item ? item->title : shortcuts[i < 4 ? i : 2],
+              (Rect){rect.x + 64, rect.y, rect.w - 75, rect.h}, 13, TEXT_BOLD, DARK_TEXT);
     }
 
-    canvas->unclip(canvas->context);
-    canvas->box(canvas->context, (Rect){bounds.x, bounds.y, bounds.w, 56}, 0, 0x121212);
-    HitId filters[] = {HIT_ALL, HIT_MUSIC};
-    static const char *names[] = {"All", "Music"};
+    const char *titles[] = {scene_home_made_for_you(view) ? "Made for you" : "Your playlists",
+                            "Recently played", "Saved albums"};
+    static const char *empty[] = {"Your playlists will appear here.",
+                                  "Albums you listen to will appear here.", "Save albums to find them here."};
+
+    for (unsigned shelf = 0; shelf < 3; ++shelf) {
+        float top = scene->home_headings[shelf];
+        label(canvas, titles[shelf], (Rect){x, top, width - 82, 24}, 16, TEXT_BOLD, DARK_TEXT);
+
+        if (!scene_home_item(view, shelf * HOME_SHELF_COLUMNS)) {
+            label(canvas, empty[shelf], (Rect){x, top + 24, width, 23}, 12, 0, DARK_MUTED);
+        }
+    }
+
+    const HitId links[] = {HIT_HOME_PLAYLISTS, HIT_HOME_ALBUMS};
 
     for (unsigned i = 0; i < 2; ++i) {
-        Rect rect = scene->hits[filters[i]].rect;
-        canvas->box(canvas->context, rect, 16, i ? 0x282828 : 0xffffff);
-        canvas->text(canvas->context, names[i], rect, 13, TEXT_CENTER | TEXT_VCENTER, i ? 0xffffff : 0);
+        HitId id = links[i];
+
+        if (scene->hits[id].enabled) {
+            label(canvas, "Show all", scene->hits[id].rect, 12, TEXT_CENTER,
+                  color_mix(DARK_MUTED, DARK_TEXT, scene->hover[id]));
+        }
+    }
+
+    for (unsigned i = 0; i < 3 * HOME_SHELF_COLUMNS; ++i) {
+        HitId id = (HitId)(HIT_CARD_FIRST + i);
+        const CatalogItem *item = scene_home_item(view, i);
+
+        if (!item || !scene->hits[id].enabled) {
+            continue;
+        }
+
+        Rect rect = scene->hits[id].rect;
+        canvas->box(canvas->context, rect, 6, color_mix(DARK_BODY, DARK_TILE, scene->hover[id]));
+        float art = rect.w - 18;
+        cover(canvas, item, (Rect){rect.x + 10, rect.y + 10, art, art},
+              i < HOME_SHELF_COLUMNS ? ICON_PLAYLIST : ICON_ALBUM);
+        label(canvas, item->title, (Rect){rect.x + 10, rect.y + art + 18, art, 17}, 12, TEXT_BOLD, DARK_TEXT);
+        canvas->text(canvas->context, item->detail, (Rect){rect.x + 10, rect.y + art + 35, art, 30}, 11, 0,
+                     DARK_MUTED);
     }
 }

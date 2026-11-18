@@ -42,11 +42,12 @@ bool browse_url(const BrowseRequest *request, char *out, size_t capacity) {
             return false;
         }
 
-        const char *type = request->filter == SEARCH_ALL       ? "track,artist,album"
-                           : request->filter == SEARCH_SONGS   ? "track"
-                           : request->filter == SEARCH_ARTISTS ? "artist"
-                           : request->filter == SEARCH_ALBUMS  ? "album"
-                                                               : NULL;
+        const char *type = request->filter == SEARCH_ALL         ? "track,artist,album,playlist"
+                           : request->filter == SEARCH_SONGS     ? "track"
+                           : request->filter == SEARCH_ARTISTS   ? "artist"
+                           : request->filter == SEARCH_ALBUMS    ? "album"
+                           : request->filter == SEARCH_PLAYLISTS ? "playlist"
+                                                                 : NULL;
 
         if (!type) {
             return false;
@@ -125,6 +126,12 @@ const char *browse_label(BrowseKind kind) {
         return "Search";
     case BROWSE_SAVED_TRACKS:
         return "Saved tracks";
+    case BROWSE_ARTIST_LIKES:
+        return "Liked songs";
+    case BROWSE_SONG_RADIO:
+        return "Song Radio";
+    case BROWSE_SETTINGS:
+        return "Settings";
     case BROWSE_SAVED_ALBUMS:
         return "Saved albums";
     case BROWSE_PLAYLISTS:
@@ -190,11 +197,38 @@ bool item_play_body(const CatalogItem *item, char *out, size_t capacity) {
     return size > 0 && (size_t)size < capacity;
 }
 
+/* Spotify user ids are plain account names; anything else is refused before it reaches a JSON body. */
+bool browse_user_id_valid(const char *id) {
+    size_t length = strlen(id);
+
+    if (!length || length >= 64) {
+        return false;
+    }
+
+    for (size_t i = 0; i < length; ++i) {
+        char c = id[i];
+
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
+              c == '_' || c == '-')) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool item_context_body(const CatalogItem *item, const BrowseRequest *context, char *out, size_t capacity) {
     if ((item->kind == ITEM_ARTIST || item->kind == ITEM_ALBUM || item->kind == ITEM_PLAYLIST) &&
         spotify_id_valid(item->id)) {
         int size =
             snprintf(out, capacity, "{\"context_uri\":\"spotify:%s:%s\"}", item_type(item->kind), item->id);
+        return size > 0 && (size_t)size < capacity;
+    }
+
+    if (context->kind == BROWSE_SAVED_TRACKS && item_can_play(item) && browse_user_id_valid(context->owner_id)) {
+        int size = snprintf(out, capacity,
+                            "{\"context_uri\":\"spotify:user:%s:collection\",\"offset\":{\"uri\":\"spotify:%s:%s\"}}",
+                            context->owner_id, item_type(item->kind), item->id);
         return size > 0 && (size_t)size < capacity;
     }
 
@@ -237,6 +271,51 @@ static bool parse_item(yyjson_val *value, BrowseKind kind, CatalogItem *item) {
     }
 
     return catalog_item_parse(value, expected, item);
+}
+
+bool browse_tracks_url(const BrowseRequest *request, char *out, size_t capacity) {
+    if (request->kind == BROWSE_SAVED_TRACKS) {
+        int size = snprintf(out, capacity, "https://api.spotify.com/v1/me/tracks?limit=%d&offset=%u",
+                            TRACKS_PAGE_SIZE, request->offset);
+        return size > 0 && (size_t)size < capacity;
+    }
+
+    if (request->kind != BROWSE_PLAYLIST_TRACKS || !spotify_id_valid(request->id)) {
+        return false;
+    }
+
+    int size = snprintf(out, capacity, "https://api.spotify.com/v1/playlists/%s/items?limit=%d&offset=%u",
+                        request->id, TRACKS_PAGE_SIZE, request->offset);
+    return size > 0 && (size_t)size < capacity;
+}
+
+bool browse_parse_tracks(const char *json, const BrowseRequest *request, TrackPage *page) {
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *items = yyjson_obj_get(root, "items");
+    yyjson_val *total = yyjson_obj_get(root, "total");
+    yyjson_val *next = yyjson_obj_get(root, "next");
+    yyjson_val *offset = yyjson_obj_get(root, "offset");
+    bool valid = yyjson_is_arr(items) && yyjson_arr_size(items) <= TRACKS_PAGE_SIZE && yyjson_is_uint(total) &&
+                 yyjson_get_uint(total) <= UINT_MAX && yyjson_is_uint(offset) &&
+                 yyjson_get_uint(offset) == request->offset && request->offset <= UINT_MAX - TRACKS_PAGE_SIZE &&
+                 (yyjson_is_null(next) || yyjson_is_str(next));
+
+    page->count = 0;
+    page->scanned = valid ? (unsigned)yyjson_arr_size(items) : 0;
+    page->total = valid ? (unsigned)yyjson_get_uint(total) : 0;
+    page->has_next = valid && yyjson_is_str(next) && yyjson_get_len(next) > 0;
+    valid = valid && (!page->has_next || page->scanned > 0);
+
+    // Local files and removed songs fail to parse; they still count towards the next offset.
+    for (unsigned i = 0; valid && i < page->scanned; ++i) {
+        if (parse_item(yyjson_arr_get(items, i), request->kind, &page->items[page->count])) {
+            ++page->count;
+        }
+    }
+
+    yyjson_doc_free(doc);
+    return valid;
 }
 
 static bool read_paging(yyjson_val *root, const BrowseRequest *request, BrowsePage *page) {
@@ -308,9 +387,10 @@ bool browse_parse(const char *json, const BrowseRequest *request, BrowsePage *pa
     yyjson_val *root = response;
 
     if (request->kind == BROWSE_SEARCH) {
-        root = yyjson_obj_get(root, request->filter == SEARCH_ARTISTS  ? "artists"
-                                    : request->filter == SEARCH_ALBUMS ? "albums"
-                                                                       : "tracks");
+        root = yyjson_obj_get(root, request->filter == SEARCH_ARTISTS     ? "artists"
+                                    : request->filter == SEARCH_ALBUMS    ? "albums"
+                                    : request->filter == SEARCH_PLAYLISTS ? "playlists"
+                                                                          : "tracks");
     }
 
     if (request->kind == BROWSE_FOLLOWED_ARTISTS) {
@@ -327,12 +407,13 @@ bool browse_parse(const char *json, const BrowseRequest *request, BrowsePage *pa
             CatalogItem item = {0};
 
             bool catalog = request->kind == BROWSE_SEARCH &&
-                           (request->filter == SEARCH_ARTISTS || request->filter == SEARCH_ALBUMS);
-            bool ok =
-                catalog
-                    ? catalog_item_parse(yyjson_arr_get(items, i),
-                                         request->filter == SEARCH_ARTISTS ? ITEM_ARTIST : ITEM_ALBUM, &item)
-                    : parse_item(yyjson_arr_get(items, i), request->kind, &item);
+                           (request->filter == SEARCH_ARTISTS || request->filter == SEARCH_ALBUMS ||
+                            request->filter == SEARCH_PLAYLISTS);
+            ItemKind catalog_kind = request->filter == SEARCH_ARTISTS  ? ITEM_ARTIST
+                                    : request->filter == SEARCH_ALBUMS ? ITEM_ALBUM
+                                                                       : ITEM_PLAYLIST;
+            bool ok = catalog ? catalog_item_parse(yyjson_arr_get(items, i), catalog_kind, &item)
+                              : parse_item(yyjson_arr_get(items, i), request->kind, &item);
 
             if (ok &&
                 (request->kind != BROWSE_PROFILE_PLAYLISTS || (request->owner_id[0] && item.public_playlist &&
@@ -349,6 +430,7 @@ bool browse_parse(const char *json, const BrowseRequest *request, BrowsePage *pa
         if (request->kind == BROWSE_SEARCH && request->filter == SEARCH_ALL && !request->offset) {
             yyjson_val *artists = yyjson_obj_get(yyjson_obj_get(response, "artists"), "items");
             yyjson_val *albums = yyjson_obj_get(yyjson_obj_get(response, "albums"), "items");
+            yyjson_val *playlists = yyjson_obj_get(yyjson_obj_get(response, "playlists"), "items");
 
             for (size_t i = 0; i < yyjson_arr_size(artists) && parsed.artist_count < 5; ++i) {
                 if (catalog_item_parse(yyjson_arr_get(artists, i), ITEM_ARTIST,
@@ -361,6 +443,13 @@ bool browse_parse(const char *json, const BrowseRequest *request, BrowsePage *pa
                 if (catalog_item_parse(yyjson_arr_get(albums, i), ITEM_ALBUM,
                                        &parsed.albums[parsed.album_count])) {
                     ++parsed.album_count;
+                }
+            }
+
+            for (size_t i = 0; i < yyjson_arr_size(playlists) && parsed.playlist_count < 5; ++i) {
+                if (catalog_item_parse(yyjson_arr_get(playlists, i), ITEM_PLAYLIST,
+                                       &parsed.playlists[parsed.playlist_count])) {
+                    ++parsed.playlist_count;
                 }
             }
         }
@@ -517,4 +606,800 @@ void search_backspace(char query[SEARCH_CAPACITY]) {
     }
 
     query[end] = 0;
+}
+
+#define SEARCH_TOKEN_LIMIT 12
+#define SEARCH_WORD_LIMIT 32
+
+typedef struct {
+    char clean[SEARCH_CAPACITY];
+    const char *tokens[SEARCH_TOKEN_LIMIT];
+    char storage[SEARCH_CAPACITY];
+    unsigned count;
+    bool op_artist;
+    bool op_album;
+    bool op_track;
+    bool op_playlist;
+    bool op_catalog;
+    bool hint_playlist;
+    bool hint_album;
+    bool hint_track;
+} SearchContext;
+
+static char fold_latin1(unsigned char b) {
+    if (b >= 0xa0) {
+        b -= 0x20;
+    }
+
+    if (b >= 0x80 && b <= 0x85) {
+        return 'a';
+    }
+
+    if (b == 0x87) {
+        return 'c';
+    }
+
+    if (b >= 0x88 && b <= 0x8b) {
+        return 'e';
+    }
+
+    if (b >= 0x8c && b <= 0x8f) {
+        return 'i';
+    }
+
+    if (b == 0x90) {
+        return 'd';
+    }
+
+    if (b == 0x91) {
+        return 'n';
+    }
+
+    if ((b >= 0x92 && b <= 0x96) || b == 0x98) {
+        return 'o';
+    }
+
+    if (b >= 0x99 && b <= 0x9c) {
+        return 'u';
+    }
+
+    if (b == 0x9d || b == 0x9f) {
+        return 'y';
+    }
+
+    return 0;
+}
+
+static char fold_latin_ext(unsigned char c1, unsigned char c2) {
+    unsigned code = ((unsigned)(c1 & 0x1f) << 6) | (unsigned)(c2 & 0x3f);
+
+    if (code <= 0x105) {
+        return 'a';
+    }
+
+    if (code <= 0x10d) {
+        return 'c';
+    }
+
+    if (code <= 0x111) {
+        return 'd';
+    }
+
+    if (code <= 0x11b) {
+        return 'e';
+    }
+
+    if (code <= 0x123) {
+        return 'g';
+    }
+
+    if (code <= 0x127) {
+        return 'h';
+    }
+
+    if (code <= 0x131) {
+        return 'i';
+    }
+
+    if (code <= 0x135) {
+        return 'j';
+    }
+
+    if (code <= 0x138) {
+        return 'k';
+    }
+
+    if (code <= 0x142) {
+        return 'l';
+    }
+
+    if (code <= 0x14b) {
+        return 'n';
+    }
+
+    if (code <= 0x151) {
+        return 'o';
+    }
+
+    if (code >= 0x154 && code <= 0x159) {
+        return 'r';
+    }
+
+    if (code <= 0x161) {
+        return 's';
+    }
+
+    if (code <= 0x167) {
+        return 't';
+    }
+
+    if (code <= 0x173) {
+        return 'u';
+    }
+
+    if (code <= 0x175) {
+        return 'w';
+    }
+
+    if (code <= 0x178) {
+        return 'y';
+    }
+
+    if (code <= 0x17e) {
+        return 'z';
+    }
+
+    return 0;
+}
+
+static void normalize_text(const char *src, char *out, size_t capacity) {
+    if (!capacity) {
+        return;
+    }
+
+    if (!src) {
+        out[0] = 0;
+        return;
+    }
+
+    size_t pos = 0;
+    bool pending_space = false;
+
+    for (const unsigned char *p = (const unsigned char *)src; *p && pos + 1 < capacity;) {
+        if (*p < 0x80) {
+            unsigned char c = *p++;
+
+            if (c >= 'A' && c <= 'Z') {
+                c = (unsigned char)(c + 32);
+            }
+
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+                if (pending_space && pos) {
+                    out[pos++] = ' ';
+                }
+
+                pending_space = false;
+
+                if (pos + 1 < capacity) {
+                    out[pos++] = (char)c;
+                }
+            } else if (c != '\'') {
+                pending_space = pos > 0;
+            }
+
+            continue;
+        }
+
+        if (p[0] == 0xc3 && p[1] >= 0x80 && p[1] <= 0xbf) {
+            unsigned char b = p[1];
+            p += 2;
+
+            if (b == 0x9f) {
+                if (pending_space && pos && pos + 1 < capacity) {
+                    out[pos++] = ' ';
+                }
+
+                pending_space = false;
+
+                if (pos + 1 < capacity) {
+                    out[pos++] = 's';
+                }
+
+                continue;
+            }
+
+            if (b == 0x86 || b == 0xa6) {
+                if (pending_space && pos && pos + 1 < capacity) {
+                    out[pos++] = ' ';
+                }
+
+                pending_space = false;
+
+                if (pos + 2 < capacity) {
+                    out[pos++] = 'a';
+                    out[pos++] = 'e';
+                }
+
+                continue;
+            }
+
+            char folded = fold_latin1(b);
+
+            if (folded) {
+                if (pending_space && pos) {
+                    out[pos++] = ' ';
+                }
+
+                pending_space = false;
+
+                if (pos + 1 < capacity) {
+                    out[pos++] = folded;
+                }
+            } else {
+                pending_space = pos > 0;
+            }
+
+            continue;
+        }
+
+        if ((p[0] == 0xc4 || p[0] == 0xc5) && (p[1] & 0xc0) == 0x80) {
+            char folded = fold_latin_ext(p[0], p[1]);
+            p += 2;
+
+            if (folded) {
+                if (pending_space && pos) {
+                    out[pos++] = ' ';
+                }
+
+                pending_space = false;
+
+                if (pos + 1 < capacity) {
+                    out[pos++] = folded;
+                }
+            }
+
+            continue;
+        }
+
+        if (p[0] == 0xe2 && p[1] == 0x80 && (p[2] >= 0x90 && p[2] <= 0x99)) {
+            unsigned char third = p[2];
+            p += 3;
+
+            if (third != 0x98 && third != 0x99) {
+                pending_space = pos > 0;
+            }
+
+            continue;
+        }
+
+        size_t len = (p[0] & 0xe0) == 0xc0 ? 2 : (p[0] & 0xf0) == 0xe0 ? 3 : (p[0] & 0xf8) == 0xf0 ? 4 : 1;
+
+        for (size_t k = 1; k < len; ++k) {
+            if ((p[k] & 0xc0) != 0x80) {
+                len = 1;
+                break;
+            }
+        }
+
+        if (pending_space && pos && pos + 1 < capacity) {
+            out[pos++] = ' ';
+        }
+
+        pending_space = false;
+
+        for (size_t k = 0; k < len && pos + 1 < capacity; ++k) {
+            out[pos++] = (char)*p++;
+        }
+    }
+
+    out[pos] = 0;
+}
+
+static bool has_edition_keyword(const char *suffix) {
+    char norm[256];
+    normalize_text(suffix, norm, sizeof(norm));
+
+    static const char *keywords[] = {
+        "remaster", "remastered", "deluxe", "live",   "acoustic", "version",  "edit",        "mix",
+        "remix",    "feat",       "ft",     "mono",   "stereo",   "explicit", "anniversary", "expanded",
+        "bonus",    "edition",    "radio",  "single", "sped up",  "slowed",   "instrumental"};
+
+    for (unsigned i = 0; i < sizeof(keywords) / sizeof(keywords[0]); ++i) {
+        if (strstr(norm, keywords[i])) {
+            return true;
+        }
+    }
+
+    for (const char *p = norm; *p; ++p) {
+        if (((p[0] == '1' && p[1] == '9') || (p[0] == '2' && p[1] == '0')) && p[2] >= '0' && p[2] <= '9' &&
+            p[3] >= '0' && p[3] <= '9') {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void normalize_core_title(const char *title, char *out, size_t capacity) {
+    char trimmed[256];
+    copy_utf8(trimmed, sizeof(trimmed), title);
+
+    const char *cut = NULL;
+    const char *markers[] = {" - ", " \xe2\x80\x93 ", " (", " ["};
+
+    for (unsigned i = 0; i < sizeof(markers) / sizeof(markers[0]); ++i) {
+        const char *found = strstr(trimmed, markers[i]);
+
+        if (found && found > trimmed && has_edition_keyword(found)) {
+            if (!cut || found < cut) {
+                cut = found;
+            }
+        }
+    }
+
+    if (cut) {
+        trimmed[cut - trimmed] = 0;
+    }
+
+    normalize_text(trimmed, out, capacity);
+}
+
+static unsigned split_words(char *text, const char **words, unsigned limit) {
+    unsigned count = 0;
+
+    for (char *p = text; *p && count < limit;) {
+        while (*p == ' ') {
+            ++p;
+        }
+
+        if (!*p) {
+            break;
+        }
+
+        words[count++] = p;
+
+        while (*p && *p != ' ') {
+            ++p;
+        }
+
+        if (*p) {
+            *p++ = 0;
+        }
+    }
+
+    return count;
+}
+
+static bool has_prefix_ci(const char *text, const char *prefix, size_t len) {
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char a = (unsigned char)text[i];
+        unsigned char b = (unsigned char)prefix[i];
+
+        if (!a) {
+            return false;
+        }
+
+        if (a >= 'A' && a <= 'Z') {
+            a = (unsigned char)(a + 32);
+        }
+
+        if (a != b) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void append_clean_words(SearchContext *ctx, const char *raw) {
+    char norm[SEARCH_CAPACITY];
+    normalize_text(raw, norm, sizeof(norm));
+
+    if (!norm[0]) {
+        return;
+    }
+
+    size_t used = strlen(ctx->clean);
+
+    if (used && used + 1 < sizeof(ctx->clean)) {
+        ctx->clean[used++] = ' ';
+    }
+
+    copy_utf8(ctx->clean + used, sizeof(ctx->clean) - used, norm);
+}
+
+static void parse_query_context(const char *query, SearchContext *ctx) {
+    memset(ctx, 0, sizeof(*ctx));
+
+    if (!query || !query[0]) {
+        return;
+    }
+
+    for (const char *p = query; *p;) {
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+
+        if (!*p) {
+            break;
+        }
+
+        char piece[SEARCH_CAPACITY];
+        size_t len = 0;
+        bool in_quotes = false;
+
+        while (*p && (in_quotes || (*p != ' ' && *p != '\t'))) {
+            if (*p == '"') {
+                in_quotes = !in_quotes;
+                ++p;
+                continue;
+            }
+
+            if (len + 1 < sizeof(piece)) {
+                piece[len++] = *p;
+            }
+
+            ++p;
+        }
+
+        piece[len] = 0;
+
+        if (has_prefix_ci(piece, "artist:", 7)) {
+            ctx->op_artist = true;
+            append_clean_words(ctx, piece + 7);
+        } else if (has_prefix_ci(piece, "album:", 6)) {
+            ctx->op_album = true;
+            append_clean_words(ctx, piece + 6);
+        } else if (has_prefix_ci(piece, "track:", 6)) {
+            ctx->op_track = true;
+            append_clean_words(ctx, piece + 6);
+        } else if (has_prefix_ci(piece, "playlist:", 9)) {
+            ctx->op_playlist = true;
+            append_clean_words(ctx, piece + 9);
+        } else if (has_prefix_ci(piece, "label:", 6) || has_prefix_ci(piece, "year:", 5) ||
+                   has_prefix_ci(piece, "genre:", 6) || has_prefix_ci(piece, "tag:", 4) ||
+                   has_prefix_ci(piece, "isrc:", 5) || has_prefix_ci(piece, "upc:", 4)) {
+            ctx->op_catalog = true;
+        } else {
+            append_clean_words(ctx, piece);
+        }
+    }
+
+    copy_utf8(ctx->storage, sizeof(ctx->storage), ctx->clean);
+    ctx->count = split_words(ctx->storage, ctx->tokens, SEARCH_TOKEN_LIMIT);
+
+    if (ctx->count > 1) {
+        for (unsigned i = 0; i < ctx->count; ++i) {
+            if (!strcmp(ctx->tokens[i], "playlist") || !strcmp(ctx->tokens[i], "playlists")) {
+                ctx->hint_playlist = true;
+            } else if (!strcmp(ctx->tokens[i], "album") || !strcmp(ctx->tokens[i], "ep")) {
+                ctx->hint_album = true;
+            } else if (!strcmp(ctx->tokens[i], "song") || !strcmp(ctx->tokens[i], "track")) {
+                ctx->hint_track = true;
+            }
+        }
+    }
+}
+
+static unsigned word_match_score(const char *token, bool is_last, const char **words, unsigned word_count) {
+    size_t len = strlen(token);
+    unsigned best = 0;
+
+    for (unsigned i = 0; i < word_count; ++i) {
+        if (!strcmp(token, words[i])) {
+            return 100;
+        }
+
+        if ((len >= 2 || is_last) && !strncmp(words[i], token, len)) {
+            best = 70;
+        }
+    }
+
+    return best;
+}
+
+static bool phrase_match(const char *haystack, const char *needle) {
+    size_t nlen = strlen(needle);
+
+    if (!nlen) {
+        return false;
+    }
+
+    const char *found = strstr(haystack, needle);
+
+    while (found) {
+        bool left_ok = found == haystack || found[-1] == ' ';
+        bool right_ok = found[nlen] == 0 || found[nlen] == ' ';
+
+        if (left_ok && right_ok) {
+            return true;
+        }
+
+        found = strstr(found + 1, needle);
+    }
+
+    return false;
+}
+
+static unsigned artist_coherence(const CatalogItem *artist, const char *norm_artist,
+                                 const CatalogItem *tracks, unsigned track_count, const CatalogItem *albums,
+                                 unsigned album_count) {
+    unsigned track_hits = 0;
+    unsigned album_hits = 0;
+
+    for (unsigned i = 0; i < track_count && i < 5; ++i) {
+        if ((artist->id[0] && catalog_track_has_artist(&tracks[i], artist->id))) {
+            ++track_hits;
+            continue;
+        }
+
+        char norm_detail[256];
+        normalize_text(tracks[i].detail, norm_detail, sizeof(norm_detail));
+
+        if (norm_artist[0] && !strcmp(norm_detail, norm_artist)) {
+            ++track_hits;
+        }
+    }
+
+    for (unsigned i = 0; i < album_count && i < 5; ++i) {
+        if (artist->id[0] && albums[i].artist_id[0] && !strcmp(albums[i].artist_id, artist->id)) {
+            ++album_hits;
+            continue;
+        }
+
+        char norm_detail[256];
+        normalize_text(albums[i].detail, norm_detail, sizeof(norm_detail));
+
+        if (norm_artist[0] && !strcmp(norm_detail, norm_artist)) {
+            ++album_hits;
+        }
+    }
+
+    unsigned score = track_hits * 24 + album_hits * 16;
+    return score > 120 ? 120 : score;
+}
+
+static unsigned album_coherence(const CatalogItem *album, const char *norm_album, const char *norm_detail,
+                                const CatalogItem *tracks, unsigned track_count, bool *is_single_wrapper) {
+    unsigned matches = 0;
+    *is_single_wrapper = false;
+
+    for (unsigned i = 0; i < track_count && i < 5; ++i) {
+        if (album->id[0] && tracks[i].album_id[0] && !strcmp(tracks[i].album_id, album->id)) {
+            ++matches;
+        } else {
+            char t_album[256];
+            char t_artist[256];
+            normalize_text(tracks[i].album_title, t_album, sizeof(t_album));
+            normalize_text(tracks[i].detail, t_artist, sizeof(t_artist));
+
+            if (norm_album[0] && !strcmp(t_album, norm_album) &&
+                (!norm_detail[0] || !strcmp(t_artist, norm_detail))) {
+                ++matches;
+            }
+        }
+
+        if (i < 3 && !strcmp(album->album_type, "single")) {
+            char t_core[256];
+            char t_artist[256];
+            normalize_core_title(tracks[i].title, t_core, sizeof(t_core));
+            normalize_text(tracks[i].detail, t_artist, sizeof(t_artist));
+
+            if (norm_album[0] && !strcmp(t_core, norm_album) &&
+                (!norm_detail[0] || !t_artist[0] || !strcmp(t_artist, norm_detail))) {
+                *is_single_wrapper = true;
+            }
+        }
+    }
+
+    unsigned score = matches * 35;
+    return score > 140 ? 140 : score;
+}
+
+static int score_search_candidate(const SearchContext *ctx, const CatalogItem *item, unsigned index,
+                                  const CatalogItem *tracks, unsigned track_count, const CatalogItem *artists,
+                                  unsigned artist_count, const CatalogItem *albums, unsigned album_count) {
+    (void)artists;
+    char norm_title[256];
+    char core_title[256];
+    char norm_detail[256];
+    char norm_guests[256];
+    char norm_album[256];
+
+    normalize_text(item->title, norm_title, sizeof(norm_title));
+    normalize_core_title(item->title, core_title, sizeof(core_title));
+    normalize_text(item->detail, norm_detail, sizeof(norm_detail));
+    normalize_text(item->guest_artists, norm_guests, sizeof(norm_guests));
+    normalize_text(item->album_title, norm_album, sizeof(norm_album));
+
+    char title_buf[256], detail_buf[256], guest_buf[256], album_buf[256];
+    copy_utf8(title_buf, sizeof(title_buf), norm_title);
+    copy_utf8(detail_buf, sizeof(detail_buf), norm_detail);
+    copy_utf8(guest_buf, sizeof(guest_buf), norm_guests);
+    copy_utf8(album_buf, sizeof(album_buf), norm_album);
+
+    const char *title_words[SEARCH_WORD_LIMIT];
+    const char *detail_words[SEARCH_WORD_LIMIT];
+    const char *guest_words[SEARCH_WORD_LIMIT];
+    const char *album_words[SEARCH_WORD_LIMIT];
+    unsigned n_title = split_words(title_buf, title_words, SEARCH_WORD_LIMIT);
+    unsigned n_detail = split_words(detail_buf, detail_words, SEARCH_WORD_LIMIT);
+    unsigned n_guest = split_words(guest_buf, guest_words, SEARCH_WORD_LIMIT);
+    unsigned n_album = split_words(album_buf, album_words, SEARCH_WORD_LIMIT);
+
+    int score = 0;
+
+    if (ctx->count > 0) {
+        size_t clean_len = strlen(ctx->clean);
+
+        if (!strcmp(norm_title, ctx->clean)) {
+            score += 340;
+        } else if (!strcmp(core_title, ctx->clean)) {
+            score += 300;
+        } else if (clean_len >= 3 && !strncmp(norm_title, ctx->clean, clean_len)) {
+            score += 200;
+        } else if (ctx->count >= 2 && phrase_match(norm_title, ctx->clean)) {
+            score += 150;
+        }
+
+        unsigned title_sum = 0;
+        unsigned all_sum = 0;
+        unsigned title_hits = 0;
+        unsigned detail_hits = 0;
+
+        for (unsigned i = 0; i < ctx->count; ++i) {
+            bool is_last = i + 1 == ctx->count;
+            unsigned tw = word_match_score(ctx->tokens[i], is_last, title_words, n_title);
+            unsigned dw = word_match_score(ctx->tokens[i], is_last, detail_words, n_detail);
+            unsigned gw = word_match_score(ctx->tokens[i], is_last, guest_words, n_guest);
+            unsigned aw = word_match_score(ctx->tokens[i], is_last, album_words, n_album);
+
+            if (gw > dw) {
+                dw = gw;
+            }
+
+            unsigned best = tw > dw ? tw : dw;
+
+            if (aw > best) {
+                best = aw;
+            }
+
+            title_sum += tw;
+            all_sum += best;
+
+            if (tw >= 70) {
+                ++title_hits;
+            }
+
+            if (dw >= 70) {
+                ++detail_hits;
+            }
+        }
+
+        score += (int)((140u * title_sum) / (ctx->count * 100u));
+
+        if (ctx->count >= 2 && all_sum >= ctx->count * 85u && title_hits > 0 && detail_hits > 0) {
+            score += 260;
+        } else if (title_hits > 0 && all_sum > title_sum) {
+            score += (int)((50u * (all_sum - title_sum)) / (ctx->count * 100u));
+        } else if (title_hits == 0 && all_sum > 0) {
+            score += (int)((20u * all_sum) / (ctx->count * 100u));
+        }
+
+        if (n_title > title_hits) {
+            unsigned extra = n_title - title_hits;
+            score -= (int)(extra > 6 ? 36 : extra * 6);
+        }
+
+        if (item->kind == ITEM_ARTIST) {
+            unsigned coh = artist_coherence(item, norm_title, tracks, track_count, albums, album_count);
+
+            if (title_hits > 0) {
+                score += (int)coh;
+            }
+
+            if (coh == 0 && track_count > 0 && !ctx->op_artist) {
+                score -= 40;
+            }
+        } else if (item->kind == ITEM_ALBUM) {
+            bool single_wrapper = false;
+            unsigned coh =
+                album_coherence(item, norm_title, norm_detail, tracks, track_count, &single_wrapper);
+
+            if (single_wrapper) {
+                score -= 100;
+            } else if (title_hits > 0) {
+                score += (int)coh;
+
+                if (!strcmp(item->album_type, "album") && coh > 0) {
+                    score += 25;
+                }
+            }
+        } else if (item->kind == ITEM_PLAYLIST) {
+            score -= 40;
+
+            if (!strcmp(item->owner_id, "spotify")) {
+                score += 65;
+            }
+        }
+    } else if (item->kind == ITEM_ARTIST && !ctx->op_artist && !ctx->op_catalog && track_count > 0) {
+        score -= 10;
+    }
+
+    if (index < 5) {
+        score += (int)((5 - index) * 14);
+    }
+
+    score += (int)((item->popularity * 80u) / 100u);
+
+    if (ctx->op_artist && item->kind == ITEM_ARTIST) {
+        score += 400;
+    }
+
+    if (ctx->op_album && item->kind == ITEM_ALBUM) {
+        score += 400;
+    }
+
+    if (ctx->op_track && item->kind == ITEM_TRACK) {
+        score += 400;
+    }
+
+    if (ctx->op_playlist && item->kind == ITEM_PLAYLIST) {
+        score += 400;
+    }
+
+    if (ctx->op_catalog && (item->kind == ITEM_TRACK || item->kind == ITEM_ALBUM)) {
+        score += 220;
+    }
+
+    if (ctx->hint_playlist && item->kind == ITEM_PLAYLIST) {
+        score += 90;
+    }
+
+    if (ctx->hint_album && item->kind == ITEM_ALBUM) {
+        score += 70;
+    }
+
+    if (ctx->hint_track && item->kind == ITEM_TRACK) {
+        score += 70;
+    }
+
+    (void)artist_count;
+    return score;
+}
+
+const CatalogItem *browse_search_top(const char *query, const CatalogItem *tracks, unsigned track_count,
+                                     const CatalogItem *artists, unsigned artist_count,
+                                     const CatalogItem *albums, unsigned album_count,
+                                     const CatalogItem *playlists, unsigned playlist_count) {
+    SearchContext ctx;
+    parse_query_context(query, &ctx);
+
+    const CatalogItem *best = NULL;
+    int best_score = INT_MIN;
+
+    const CatalogItem *groups[] = {tracks, artists, albums, playlists};
+    unsigned counts[] = {track_count, artist_count, album_count, playlist_count};
+
+    for (unsigned g = 0; g < 4; ++g) {
+        unsigned limit = counts[g] < 5 ? counts[g] : 5;
+
+        for (unsigned i = 0; i < limit; ++i) {
+            const CatalogItem *item = &groups[g][i];
+
+            if (!item->id[0] && !item->title[0]) {
+                continue;
+            }
+
+            int score = score_search_candidate(&ctx, item, i, tracks, track_count, artists, artist_count,
+                                               albums, album_count);
+
+            if (!best || score > best_score) {
+                best = item;
+                best_score = score;
+            }
+        }
+    }
+
+    return best;
 }

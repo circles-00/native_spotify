@@ -23,7 +23,16 @@ static void test_url_selection(void) {
     CHECK(!artwork_url_valid(""));
     CHECK(artwork_url_valid("https://i.scdn.co/image/ab0123"));
     CHECK(artwork_url_valid("https://mosaic.scdn.co/640/abc/def"));
+    CHECK(artwork_url_valid("https://image-cdn-ak.spotifycdn.com/image/ab67706c0000da841234"));
+    CHECK(artwork_url_valid("https://image-cdn-fa.spotifycdn.com/image/ab67706c0000da841234"));
+    CHECK(artwork_url_valid("https://seeded-session-images.scdn.co/v2/img/540/mix/abc/en"));
+    CHECK(artwork_url_valid("https://dailymix-images.scdn.co/v2/img/ab676161/1/en/default"));
+    CHECK(artwork_url_valid("https://charts-images.scdn.co/assets/locale_en/regional/daily.jpg"));
+    CHECK(artwork_url_valid("https://thisis-images.spotifycdn.com/37i9dQZF1DZ06evO-default.jpg"));
+    CHECK(artwork_url_valid("https://t.scdn.co/images/5a4c2d8f_cover.png"));
     CHECK(!artwork_url_valid("http://i.scdn.co/image/abc"));
+    CHECK(!artwork_url_valid("https://scdn.co/image/abc"));
+    CHECK(!artwork_url_valid("https://spotifycdn.com/image/abc"));
     CHECK(!artwork_url_valid("https://i.scdn.co.evil.test/image/abc"));
     CHECK(!artwork_url_valid("https://i.scdn.co@127.0.0.1/image/abc"));
     CHECK(!artwork_url_valid("https://i.scdn.co/image/../secret"));

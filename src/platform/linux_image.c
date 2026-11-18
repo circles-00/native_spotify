@@ -3,10 +3,15 @@
 
 #include <stdio.h>
 #include <jpeglib.h>
+#include <jerror.h>
 #include <png.h>
 #include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef HAVE_LIBWEBP
+#include <webp/decode.h>
+#endif
 
 typedef struct {
     struct jpeg_decompress_struct decoder;
@@ -14,6 +19,7 @@ typedef struct {
     jmp_buf jump;
     unsigned char *row;
     uint32_t *pixels;
+    bool eof;
 } JpegImage;
 
 static void jpeg_failure(j_common_ptr decoder) {
@@ -21,7 +27,14 @@ static void jpeg_failure(j_common_ptr decoder) {
     longjmp(image->jump, 1);
 }
 
-static void jpeg_quiet(j_common_ptr decoder) {
+static void jpeg_quiet(j_common_ptr decoder, int msg_level) {
+    if (msg_level < 0 && decoder->err->msg_code == JWRN_JPEG_EOF) {
+        JpegImage *image = decoder->client_data;
+        image->eof = true;
+    }
+}
+
+static void jpeg_noop(j_common_ptr decoder) {
     (void)decoder;
 }
 
@@ -34,7 +47,8 @@ static bool decode_jpeg(const void *data, size_t size, Image *image) {
 
     jpeg->decoder.err = jpeg_std_error(&jpeg->error);
     jpeg->error.error_exit = jpeg_failure;
-    jpeg->error.output_message = jpeg_quiet;
+    jpeg->error.emit_message = jpeg_quiet;
+    jpeg->error.output_message = jpeg_noop;
     jpeg->decoder.client_data = jpeg;
 
     if (setjmp(jpeg->jump)) {
@@ -55,8 +69,10 @@ static bool decode_jpeg(const void *data, size_t size, Image *image) {
         return false;
     }
 
-    jpeg->decoder.out_color_space = JCS_RGB;
+    bool cmyk = jpeg->decoder.jpeg_color_space == JCS_CMYK || jpeg->decoder.jpeg_color_space == JCS_YCCK;
+    jpeg->decoder.out_color_space = cmyk ? JCS_CMYK : JCS_RGB;
     jpeg_start_decompress(&jpeg->decoder);
+    unsigned channels = (unsigned)jpeg->decoder.output_components;
     unsigned longest = jpeg->decoder.output_width > jpeg->decoder.output_height ? jpeg->decoder.output_width
                                                                                 : jpeg->decoder.output_height;
     unsigned width = longest > ARTWORK_SIDE_LIMIT ? jpeg->decoder.output_width * ARTWORK_SIDE_LIMIT / longest
@@ -67,7 +83,7 @@ static bool decode_jpeg(const void *data, size_t size, Image *image) {
     width = width ? width : 1;
     height = height ? height : 1;
     jpeg->pixels = malloc(width * height * sizeof(*jpeg->pixels));
-    jpeg->row = malloc(jpeg->decoder.output_width * 3);
+    jpeg->row = malloc((size_t)jpeg->decoder.output_width * channels);
 
     if (!jpeg->pixels || !jpeg->row) {
         jpeg_destroy_decompress(&jpeg->decoder);
@@ -85,10 +101,19 @@ static bool decode_jpeg(const void *data, size_t size, Image *image) {
 
         if (target < height && source == target * jpeg->decoder.output_height / height) {
             for (unsigned x = 0; x < width; ++x) {
-                unsigned offset = x * jpeg->decoder.output_width / width * 3;
-                jpeg->pixels[target * width + x] = 0xff000000u | (uint32_t)jpeg->row[offset] << 16 |
-                                                   (uint32_t)jpeg->row[offset + 1] << 8 |
-                                                   jpeg->row[offset + 2];
+                unsigned offset = x * jpeg->decoder.output_width / width * channels;
+                uint32_t r = jpeg->row[offset];
+                uint32_t g = jpeg->row[offset + 1];
+                uint32_t b = jpeg->row[offset + 2];
+
+                if (cmyk && channels >= 4) {
+                    uint32_t k = jpeg->row[offset + 3];
+                    r = (r * k) / 255u;
+                    g = (g * k) / 255u;
+                    b = (b * k) / 255u;
+                }
+
+                jpeg->pixels[target * width + x] = 0xff000000u | (r << 16) | (g << 8) | b;
             }
 
             ++target;
@@ -96,7 +121,7 @@ static bool decode_jpeg(const void *data, size_t size, Image *image) {
     }
 
     jpeg_finish_decompress(&jpeg->decoder);
-    bool ok = jpeg->error.num_warnings == 0 && target == height;
+    bool ok = !jpeg->eof && target == height;
     jpeg_destroy_decompress(&jpeg->decoder);
     free(jpeg->row);
 
@@ -162,6 +187,51 @@ static bool decode_png(const void *data, size_t size, Image *image) {
     return output != NULL;
 }
 
+#ifdef HAVE_LIBWEBP
+static bool decode_webp(const void *data, size_t size, Image *image) {
+    int src_width = 0;
+    int src_height = 0;
+
+    if (!WebPGetInfo(data, size, &src_width, &src_height) || src_width <= 0 || src_height <= 0 ||
+        !image_dimensions_valid((unsigned)src_width, (unsigned)src_height)) {
+        return false;
+    }
+
+    uint8_t *rgba = WebPDecodeRGBA(data, size, &src_width, &src_height);
+
+    if (!rgba) {
+        return false;
+    }
+
+    unsigned sw = (unsigned)src_width;
+    unsigned sh = (unsigned)src_height;
+    unsigned longest = sw > sh ? sw : sh;
+    unsigned width = longest > ARTWORK_SIDE_LIMIT ? sw * ARTWORK_SIDE_LIMIT / longest : sw;
+    unsigned height = longest > ARTWORK_SIDE_LIMIT ? sh * ARTWORK_SIDE_LIMIT / longest : sh;
+    width = width ? width : 1;
+    height = height ? height : 1;
+    uint32_t *output = malloc(width * height * sizeof(*output));
+
+    if (output) {
+        for (unsigned y = 0; y < height; ++y) {
+            for (unsigned x = 0; x < width; ++x) {
+                unsigned offset = ((y * sh / height) * sw + x * sw / width) * 4;
+                uint32_t a = rgba[offset + 3];
+                uint32_t r = rgba[offset] * a / 255u;
+                uint32_t g = rgba[offset + 1] * a / 255u;
+                uint32_t b = rgba[offset + 2] * a / 255u;
+                output[y * width + x] = 0xff000000u | (r << 16) | (g << 8) | b;
+            }
+        }
+
+        *image = (Image){width, height, output};
+    }
+
+    WebPFree(rgba);
+    return output != NULL;
+}
+#endif
+
 bool platform_image_decode(const void *data, size_t size, Image *image) {
     *image = (Image){0};
 
@@ -178,6 +248,12 @@ bool platform_image_decode(const void *data, size_t size, Image *image) {
     if (bytes[0] == 0xff && bytes[1] == 0xd8) {
         return decode_jpeg(data, size, image);
     }
+
+#ifdef HAVE_LIBWEBP
+    if (size >= 12 && !memcmp(data, "RIFF", 4) && !memcmp(bytes + 8, "WEBP", 4)) {
+        return decode_webp(data, size, image);
+    }
+#endif
 
     return false;
 }

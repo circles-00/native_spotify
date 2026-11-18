@@ -71,12 +71,18 @@ or its private Home feed, and no fake listening history is presented.
   the Home **Enable recently played** button to reauthorize. This does not remove
   the saved Soloist key. API/account restrictions can still prevent access. When
   history is unavailable or empty, Home uses clearly labeled browse shortcuts.
-- Toggleable **Now Playing**, **Queue**, **Friend Activity** and **Lyrics** panels.
-  Now Playing and Queue use real playback/queue data. Friends and Lyrics explicitly
-  explain their unavailable data source: Spotify's public API does not expose
-  friend activity or licensed lyrics. There is no fabricated feed, unofficial
-  private-endpoint scraping, or unlicensed lyrics integration. One panel is open
-  at a time; wide windows reflow and compact windows use a closable overlay.
+- Toggleable **Devices**, **Queue**, **Friend Activity** and **Lyrics** panels.
+  Devices lists every Spotify Connect device; click one to move playback there.
+  A blue **Playing on <device>** badge appears in the header while another
+  device plays. **Add to queue** keeps songs in this app and hands them to
+  Spotify one at a time just before they are due, because Spotify's API cannot
+  remove queued songs. Starting a playlist, album or song replaces the queue, and
+  **Clear queue** empties it; the queue is saved between sessions. Lyrics come from
+  [LRCLIB](https://lrclib.net/); when the lyrics panel is open, only track
+  metadata (title, artist, album and duration) is sent to look up lyrics, not
+  Spotify credentials. Friend Activity isn't available through Spotify's public
+  API. One panel is open at a time; wide windows reflow and compact windows
+  use a closable overlay.
 - Login/session restoration automatically loads playback, devices and library
   previews. The left playlist library loads every API page in the background,
   preserving the returned order (up to 5,000 entries), and scrolls independently
@@ -129,7 +135,7 @@ or its private Home feed, and no fake listening history is presented.
 - Unicode metadata/input, mouse and keyboard navigation, and Windows per-monitor
   DPI-aware layout/text.
 Still missing: library/playlist mutations, queue additions,
-Liked Songs context/radio parity, podcast search, live friend activity/lyrics,
+Liked Songs context/radio parity, podcast search, live friend activity,
 full accessibility, direct Wayland and macOS. Custom-painted controls do
 not yet expose full screen-reader semantics.
 
@@ -193,11 +199,15 @@ Spotify refuses librespot's audio-key requests for many accounts (librespot issu
 - **Seek/volume:** drag and release the player bars. No request is sent during
   dragging. Keyboard Left/Right changes a focused bar's draft; Enter commits it.
 - **Refresh:** the circular-arrow icon refreshes playback and the current API list.
-  Queue reloads its own snapshot, and opening Devices reloads device discovery.
-- **Panels:** use the bottom-player lyrics, record (Now Playing) and queue icons;
+  Queue reloads its own snapshot, and the Devices panel refreshes while it is open.
+- **Panels:** use the bottom-player lyrics, queue and speaker (Devices) icons;
   the people icon in the header toggles Friend Activity. Click again, use the
-  panel's close button, or press Escape to hide it. Friends/Lyrics show an API
-  availability explanation, not live content.
+  panel's close button, or press Escape to hide it.
+- **Lyrics:** click the expand icon in the Lyrics sidebar to go fullscreen.
+  Escape returns to the sidebar. Synced lyrics highlight and follow the current
+  line; click any timed line to seek there on a device that supports seeking.
+  If you scroll manually, use **Follow playback** to rejoin the current line.
+  When timed lyrics are unavailable, matching plain lyrics are shown instead.
 
 API acknowledgements are **not** proof that playback already changed; the
 optimistic update is reconciled by scheduled reads. Slider drafts stay separate

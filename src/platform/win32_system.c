@@ -19,6 +19,10 @@ bool platform_init(void) {
     return WSAStartup(MAKEWORD(2, 2), &data) == 0;
 }
 
+void platform_trim_memory(void) {
+    HeapCompact(GetProcessHeap(), 0);
+}
+
 bool platform_random(unsigned char *out, size_t size) {
     return size <= ULONG_MAX && BCryptGenRandom(NULL, out, (ULONG)size, BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
 }
@@ -60,14 +64,14 @@ static bool wide(const char *text, wchar_t *out, int capacity) {
 
 bool platform_http(const char *method, const char *url, const char *token, const char *body, bool form,
                    HttpResponse *response) {
-    wchar_t address[2048];
+    wchar_t address[4800];
     wchar_t verb[16];
     wchar_t host[256];
-    wchar_t path[2048];
+    wchar_t path[4800];
     wchar_t headers[4352] = {0};
     char authorization[4352] = {0};
 
-    if (!wide(url, address, 2048) || !wide(method, verb, 16)) {
+    if (!wide(url, address, sizeof(address) / sizeof(*address)) || !wide(method, verb, 16)) {
         return false;
     }
 
@@ -76,7 +80,7 @@ bool platform_http(const char *method, const char *url, const char *token, const
     parts.lpszHostName = host;
     parts.dwHostNameLength = 256;
     parts.lpszUrlPath = path;
-    parts.dwUrlPathLength = 2048;
+    parts.dwUrlPathLength = sizeof(path) / sizeof(*path);
 
     if (!WinHttpCrackUrl(address, 0, 0, &parts) || parts.nScheme != INTERNET_SCHEME_HTTPS) {
         return false;
@@ -110,15 +114,24 @@ bool platform_http(const char *method, const char *url, const char *token, const
         goto done;
     }
 
-    snprintf(authorization, sizeof(authorization), "%s%s%sContent-Type: %s\r\n",
-             token ? "Authorization: Bearer " : "", token ? token : "", token ? "\r\n" : "",
-             form ? "application/x-www-form-urlencoded" : "application/json");
+    if (form || body) {
+        snprintf(authorization, sizeof(authorization), "%s%s%sContent-Type: %s\r\n",
+                 token ? "Authorization: Bearer " : "", token ? token : "", token ? "\r\n" : "",
+                 form ? "application/x-www-form-urlencoded" : "application/json");
+    } else if (token) {
+        snprintf(authorization, sizeof(authorization), "Authorization: Bearer %s\r\n", token);
+    } else {
+        snprintf(authorization, sizeof(authorization),
+                 "Accept: image/png, image/jpeg, image/webp;q=0.9, */*;q=0.8\r\n");
+    }
 
     if (!wide(authorization, headers, 4352)) {
         goto done;
     }
 
-    if (!WinHttpSendRequest(request, headers, (DWORD)-1, (void *)body, body ? (DWORD)strlen(body) : 0,
+    LPCWSTR request_headers = headers[0] ? headers : WINHTTP_NO_ADDITIONAL_HEADERS;
+
+    if (!WinHttpSendRequest(request, request_headers, (DWORD)-1, (void *)body, body ? (DWORD)strlen(body) : 0,
                             body ? (DWORD)strlen(body) : 0, 0) ||
         !WinHttpReceiveResponse(request, NULL)) {
         goto done;

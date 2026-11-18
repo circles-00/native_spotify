@@ -3,8 +3,9 @@
 
 #include "browse.h"
 
-#define BROWSE_CACHE_LIMIT 16
-#define BROWSE_CACHE_TTL_MS 300000
+#define BROWSE_CACHE_LIBRARY_SLOTS 5
+#define BROWSE_CACHE_LIMIT (BROWSE_CACHE_LIBRARY_SLOTS + 4)
+#define BROWSE_CACHE_TTL_MS 120000
 
 typedef struct {
     BrowseRequest request;
@@ -20,6 +21,7 @@ typedef struct {
 } BrowseCache;
 
 bool browse_cache_get(BrowseCache *cache, const BrowseRequest *request, uint64_t now_ms, BrowsePage *page);
+void browse_cache_invalidate(BrowseCache *cache, const BrowseRequest *request);
 void browse_cache_store(BrowseCache *cache, const BrowseRequest *request, const BrowsePage *page,
                         uint64_t now_ms);
 

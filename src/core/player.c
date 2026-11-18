@@ -81,6 +81,8 @@ bool devices_parse(const char *json, Devices *devices) {
             }
 
             copy_utf8(device.name, sizeof(device.name), name);
+            const char *type = yyjson_get_str(yyjson_obj_get(value, "type"));
+            copy_utf8(device.type, sizeof(device.type), type ? type : "");
             device.active = yyjson_is_true(yyjson_obj_get(value, "is_active"));
             device.restricted = !yyjson_is_false(yyjson_obj_get(value, "is_restricted"));
             device.supports_volume = yyjson_is_true(yyjson_obj_get(value, "supports_volume"));
@@ -175,6 +177,15 @@ bool queue_parse(const char *json, Queue *queue) {
     yyjson_doc_free(doc);
 
     return valid;
+}
+
+/* Rows of a composed queue are a window starting at `first`; absolute indexes outside it return NULL. */
+const CatalogItem *queue_row(const Queue *queue, unsigned index) {
+    if (index < queue->first || index - queue->first >= queue->count) {
+        return NULL;
+    }
+
+    return &queue->items[index - queue->first];
 }
 
 bool queue_page(const Queue *queue, unsigned offset, BrowsePage *page) {

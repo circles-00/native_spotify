@@ -82,3 +82,86 @@ unsigned artwork_store_next(const ArtworkStore *store) {
 
     return slot;
 }
+
+size_t artwork_store_bytes(const ArtworkStore *store) {
+    size_t total = 0;
+
+    for (unsigned i = 0; i < ARTWORK_CACHE_LIMIT; ++i) {
+        const ArtworkEntry *entry = &store->entries[i];
+
+        if (entry->image.pixels) {
+            total += (size_t)entry->image.width * entry->image.height * sizeof(uint32_t);
+        }
+    }
+
+    return total;
+}
+
+bool artwork_store_evict_budget(ArtworkStore *store, size_t reserve_bytes) {
+    if (reserve_bytes > ARTWORK_HARD_BYTES_LIMIT) {
+        return false;
+    }
+
+    size_t total = artwork_store_bytes(store);
+
+    while (total + reserve_bytes > ARTWORK_BYTES_LIMIT) {
+        ArtworkEntry *victim = NULL;
+
+        for (unsigned i = 0; i < ARTWORK_CACHE_LIMIT; ++i) {
+            ArtworkEntry *entry = &store->entries[i];
+
+            if (!entry->image.pixels || entry->state == ART_LOADING || entry->frame == store->frame) {
+                continue;
+            }
+
+            if (!victim || entry->used < victim->used) {
+                victim = entry;
+            }
+        }
+
+        if (!victim) {
+            break;
+        }
+
+        size_t freed = (size_t)victim->image.width * victim->image.height * sizeof(uint32_t);
+        free(victim->image.pixels);
+        *victim = (ArtworkEntry){0};
+        total -= freed;
+    }
+
+    return total + reserve_bytes <= ARTWORK_HARD_BYTES_LIMIT;
+}
+
+bool artwork_store_prune_stale(ArtworkStore *store, uint64_t keep_frames, size_t target_bytes) {
+    size_t total = artwork_store_bytes(store);
+    bool pruned = false;
+
+    while (total > target_bytes) {
+        ArtworkEntry *victim = NULL;
+
+        for (unsigned i = 0; i < ARTWORK_CACHE_LIMIT; ++i) {
+            ArtworkEntry *entry = &store->entries[i];
+
+            if (!entry->image.pixels || entry->state == ART_LOADING || entry->frame > store->frame ||
+                store->frame - entry->frame <= keep_frames) {
+                continue;
+            }
+
+            if (!victim || entry->used < victim->used) {
+                victim = entry;
+            }
+        }
+
+        if (!victim) {
+            break;
+        }
+
+        size_t freed = (size_t)victim->image.width * victim->image.height * sizeof(uint32_t);
+        free(victim->image.pixels);
+        *victim = (ArtworkEntry){0};
+        total -= freed;
+        pruned = true;
+    }
+
+    return pruned;
+}

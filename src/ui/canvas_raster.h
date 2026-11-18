@@ -4,6 +4,8 @@
 #include "artwork.h"
 #include "canvas.h"
 
+#define RASTER_CLIP_LIMIT 16
+
 typedef struct {
     int left;
     int top;
@@ -29,7 +31,7 @@ typedef struct {
 void canvas_raster_round_rect(const RasterSurface *surface, Rect rect, float radius, Color top, Color bottom);
 void canvas_raster_path(const RasterSurface *surface, const Point *points, unsigned count, bool closed,
                         bool fill, float width, Color value);
-void canvas_raster_stroke_circle(const RasterSurface *surface, Rect rect, float width, Color value);
-void canvas_raster_image(const RasterSurface *surface, const Image *image, Rect rect);
+void canvas_raster_ellipse(const RasterSurface *surface, Rect rect, bool fill, float width, Color value);
+void canvas_raster_image(const RasterSurface *surface, const Image *image, Rect rect, float radius);
 
 #endif

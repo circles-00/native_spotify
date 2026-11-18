@@ -1,18 +1,22 @@
-#include "scene.h"
+#include "scene_internal.h"
 #include "artwork_cache.h"
 #include "collection_scene.h"
+#include "dark_palette.h"
+#include "skeleton.h"
 #include "home_scene.h"
 #include "panel_scene.h"
+#include "platform.h"
 #include "search_scene.h"
+#include "settings_scene.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #define BLACK 0x000000u
-#define PANEL 0x121212u
-#define WHITE 0xffffffu
-#define MUTED 0xb3b3b3u
-#define GREEN 0x1ed760u
+#define PANEL DARK_BODY
+#define WHITE DARK_TEXT
+#define MUTED DARK_MUTED
+#define GREEN DARK_ACCENT
 
 static const Icon collection_icons[] = {ICON_HEART, ICON_ALBUM, ICON_PLAYLIST, ICON_QUEUE};
 static const Color collection_colors[] = {0x5b35d5, 0x157b68, 0x264cad, 0xb94b2c};
@@ -26,30 +30,35 @@ static void line(Canvas *canvas, float x, float y, float width, Color color) {
     canvas->box(canvas->context, (Rect){x, y, width, 1}, 0, color);
 }
 
-static void pill(Scene *scene, Canvas *canvas, HitId id, const char *label, bool selected) {
-    Rect rect = scene->hits[id].rect;
-    Color background = selected ? WHITE : color_mix(0x242424, 0x383838, scene->hover[id]);
-    canvas->box(canvas->context, rect, rect.h / 2, background);
-    canvas->text(canvas->context, label, rect, 13, TEXT_BOLD | TEXT_CENTER | TEXT_VCENTER,
-                 selected ? BLACK : WHITE);
+static void equalizer(Canvas *canvas, float x, float y) {
+    canvas->box(canvas->context, (Rect){x, y + 6, 2.5f, 8}, 1, GREEN);
+    canvas->box(canvas->context, (Rect){x + 4.5f, y + 1, 2.5f, 13}, 1, GREEN);
+    canvas->box(canvas->context, (Rect){x + 9, y + 4, 2.5f, 10}, 1, GREEN);
 }
 
-static void button(Scene *scene, Canvas *canvas, HitId id, const char *label, Icon icon, bool filled) {
+static void pill(Scene *scene, Canvas *canvas, HitId id, const char *label, bool selected) {
+    Rect rect = scene->hits[id].rect;
+    Color background = selected ? WHITE : color_mix(DARK_TILE, DARK_HOVER, scene->hover[id]);
+
+    canvas->box(canvas->context, rect, rect.h / 2, background);
+    canvas->text(canvas->context, label, rect, 12, TEXT_CENTER | TEXT_VCENTER, selected ? BLACK : WHITE);
+}
+
+static void button(Scene *scene, Canvas *canvas, HitId id, const char *label, Icon icon, bool filled,
+                   Color base_bg, float icon_size, bool muted_rest) {
     Hit hit = scene->hits[id];
+
     if (hit.rect.w <= 0) {
         return;
     }
 
     float hover = scene->hover[id];
-    Color foreground = hit.enabled ? WHITE : 0x666666;
     bool active = (id == HIT_QUEUE && scene->panel == PANEL_QUEUE) ||
-                  (id == HIT_NOW_PLAYING && scene->panel == PANEL_NOW_PLAYING) ||
+                  (id == HIT_DEVICES && scene->panel == PANEL_DEVICES) ||
                   (id == HIT_FRIENDS && scene->panel == PANEL_FRIENDS) ||
                   (id == HIT_LYRICS && scene->panel == PANEL_LYRICS);
-
-    if (active) {
-        foreground = GREEN;
-    }
+    Color rest = muted_rest ? color_mix(MUTED, WHITE, hover) : WHITE;
+    Color foreground = active ? GREEN : (hit.enabled ? rest : 0x555555);
 
     if (filled) {
         canvas->box(canvas->context, hit.rect, hit.rect.h / 2, color_mix(WHITE, 0xe2e2e2, hover));
@@ -57,7 +66,8 @@ static void button(Scene *scene, Canvas *canvas, HitId id, const char *label, Ic
     }
 
     if (!filled && hover > .01f) {
-        canvas->box(canvas->context, hit.rect, hit.rect.h / 2, color_mix(PANEL, 0x333333, hover));
+        canvas->box(canvas->context, hit.rect, hit.rect.h / 2,
+                    color_mix(base_bg, base_bg == BLACK ? 0x222222 : 0x333333, hover));
     }
 
     if (label) {
@@ -67,97 +77,336 @@ static void button(Scene *scene, Canvas *canvas, HitId id, const char *label, Ic
 
     if (!label) {
         canvas_icon(canvas, icon,
-                    (Rect){hit.rect.x + (hit.rect.w - 20) / 2, hit.rect.y + (hit.rect.h - 20) / 2, 20, 20},
+                    (Rect){hit.rect.x + (hit.rect.w - icon_size) / 2,
+                           hit.rect.y + (hit.rect.h - icon_size) / 2, icon_size, icon_size},
                     foreground);
+    }
+
+    if (active && base_bg == DARK_CHROME) {
+        canvas->ellipse(canvas->context,
+                        (Rect){hit.rect.x + (hit.rect.w - 4) / 2, hit.rect.y + hit.rect.h - 1, 4, 4}, true, 1,
+                        GREEN);
     }
 }
 
-static void artwork(Canvas *canvas, Rect rect, unsigned style, bool large) {
+static void artwork(Canvas *canvas, Rect rect, unsigned style, bool large, float radius) {
     Color top = collection_colors[style % 4];
     Color bottom = style % 4 == 0 ? 0xb1d6c1 : color_mix(top, 0x101820, .65f);
-    canvas->gradient(canvas->context, rect, 5, top, bottom);
+
+    canvas->gradient(canvas->context, rect, radius, top, bottom);
 
     float size = rect.w * (large ? .38f : .44f);
     canvas_icon(canvas, collection_icons[style % 4],
                 (Rect){rect.x + (rect.w - size) / 2, rect.y + (rect.h - size) / 2, size, size}, WHITE);
 }
 
-static void input_text(Scene *scene, Canvas *canvas, Rect rect, const char *value, const char *placeholder,
-                       bool focused) {
-    if (scene->select_all && focused) {
-        canvas->box(canvas->context, rect, 2, 0x305374);
+static void draw_rounded_art(Canvas *canvas, const char *url, Rect rect, float radius, unsigned style,
+                             bool large) {
+    if (!canvas_artwork(canvas, url, rect, radius)) {
+        artwork(canvas, rect, style, large, radius);
+    }
+}
+
+static unsigned input_utf8_next(const char *value, unsigned pos, unsigned len) {
+    if (pos >= len) {
+        return len;
     }
 
-    canvas->text(canvas->context, value[0] ? value : placeholder, rect, 15, TEXT_INPUT | TEXT_VCENTER,
-                 value[0] ? WHITE : MUTED);
+    ++pos;
 
-    if (focused && !scene->select_all && canvas->measure) {
-        float width = canvas->measure(canvas->context, value, 15);
-        if (width > rect.w - 2) {
-            width = rect.w - 2;
+    while (pos < len && ((unsigned char)value[pos] & 0xc0) == 0x80) {
+        ++pos;
+    }
+
+    return pos;
+}
+
+static float measure_prefix(Canvas *canvas, const char *value, unsigned bytes) {
+    if (!bytes || !canvas->measure) {
+        return 0.0f;
+    }
+
+    char scratch[SEARCH_CAPACITY];
+
+    if (bytes >= sizeof(scratch)) {
+        bytes = sizeof(scratch) - 1;
+    }
+
+    memcpy(scratch, value, bytes);
+    scratch[bytes] = 0;
+    return canvas->measure(canvas->context, scratch, 13);
+}
+
+static void input_text(Scene *scene, Canvas *canvas, Rect rect, const char *value, const char *placeholder,
+                       HitId id, bool focused) {
+    InputState *state = id == HIT_LIST_FILTER ? &scene->filter_input : &scene->search_input;
+    unsigned len = (unsigned)strlen(value);
+
+    if (state->cursor > len) {
+        state->cursor = len;
+    }
+
+    if (state->anchor > len) {
+        state->anchor = len;
+    }
+
+    if (focused && scene->select_all && len > 0 && state->cursor == state->anchor) {
+        state->anchor = 0;
+        state->cursor = len;
+    }
+
+    if (focused && scene->input_click_pending) {
+        scene->input_click_pending = false;
+
+        if (!len || !canvas->measure) {
+            state->cursor = len;
+            state->anchor = len;
+        } else {
+            float target_x = scene->input_click_x - rect.x + state->scroll_x;
+            unsigned pos = 0;
+            unsigned best = len;
+            float prev_w = 0.0f;
+
+            while (pos < len) {
+                unsigned next = input_utf8_next(value, pos, len);
+                float next_w = measure_prefix(canvas, value, next);
+
+                if (target_x <= (prev_w + next_w) * 0.5f) {
+                    best = pos;
+                    break;
+                }
+
+                pos = next;
+                prev_w = next_w;
+            }
+
+            state->cursor = best;
+            state->anchor = best;
         }
-        canvas->box(canvas->context, (Rect){rect.x + width, rect.y + (rect.h - 18) / 2, 1, 18}, 0, WHITE);
+
+        scene->select_all = false;
+    }
+
+    unsigned start = state->cursor < state->anchor ? state->cursor : state->anchor;
+    unsigned end = state->cursor < state->anchor ? state->anchor : state->cursor;
+    float visible_w = rect.w > 2.0f ? rect.w - 2.0f : 0.0f;
+    float total_w = value[0] && canvas->measure ? canvas->measure(canvas->context, value, 13) : 0.0f;
+    float cursor_x = focused ? measure_prefix(canvas, value, state->cursor) : 0.0f;
+
+    if (!focused || total_w <= visible_w) {
+        state->scroll_x = 0.0f;
+    } else {
+        if (cursor_x - state->scroll_x > visible_w) {
+            state->scroll_x = cursor_x - visible_w;
+        }
+
+        if (cursor_x < state->scroll_x) {
+            state->scroll_x = cursor_x;
+        }
+
+        float max_scroll = total_w - visible_w;
+
+        if (state->scroll_x > max_scroll) {
+            state->scroll_x = max_scroll;
+        }
+
+        if (state->scroll_x < 0.0f) {
+            state->scroll_x = 0.0f;
+        }
+    }
+
+    bool clipped = canvas->clip != NULL && canvas->unclip != NULL;
+
+    if (clipped) {
+        canvas->clip(canvas->context, rect, 0);
+    }
+
+    if (focused && start < end && canvas->measure) {
+        float x0 = measure_prefix(canvas, value, start) - state->scroll_x;
+        float x1 = measure_prefix(canvas, value, end) - state->scroll_x;
+
+        if (x0 < 0.0f) {
+            x0 = 0.0f;
+        }
+
+        if (x1 > rect.w) {
+            x1 = rect.w;
+        }
+
+        if (x1 > x0) {
+            float sel_h = rect.h < 18.0f ? rect.h : 18.0f;
+            canvas->box(canvas->context,
+                        (Rect){rect.x + x0, rect.y + (rect.h - sel_h) * 0.5f, x1 - x0, sel_h}, 3, 0x305374);
+        }
+    }
+
+    if (!value[0]) {
+        canvas->text(canvas->context, placeholder, rect, 13, TEXT_INPUT | TEXT_VCENTER, MUTED);
+    } else {
+        Rect text_rect =
+            total_w + 8.0f > rect.w ? (Rect){rect.x - state->scroll_x, rect.y, total_w + 8.0f, rect.h} : rect;
+        canvas->text(canvas->context, value, text_rect, 13, TEXT_INPUT | TEXT_VCENTER, WHITE);
+    }
+
+    if (focused && start == end && canvas->measure) {
+        float caret_x = rect.x + cursor_x - state->scroll_x;
+
+        if (caret_x > rect.x + visible_w) {
+            caret_x = rect.x + visible_w;
+        }
+
+        if (caret_x < rect.x) {
+            caret_x = rect.x;
+        }
+
+        canvas->box(canvas->context, (Rect){caret_x, rect.y + (rect.h - 14.0f) * 0.5f, 1, 14}, 0, WHITE);
+    }
+
+    if (clipped) {
+        canvas->unclip(canvas->context);
     }
 }
 
 static void header(Scene *scene, const View *view, Canvas *canvas) {
-    canvas_icon(canvas, ICON_LIBRARY, (Rect){24, 19, 28, 28}, WHITE);
-    canvas->box(canvas->context, scene->hits[HIT_HOME].rect, 24, 0x1f1f1f);
-    button(scene, canvas, HIT_HOME, NULL, ICON_HOME, false);
-
-    canvas->box(canvas->context, scene->search, 24, 0x1f1f1f);
-    if (scene->focus == HIT_SEARCH) {
-        Rect outline = scene->search;
-        canvas->box(canvas->context, outline, 24, 0x555555);
-        canvas->box(canvas->context, (Rect){outline.x + 1, outline.y + 1, outline.w - 2, outline.h - 2}, 23,
-                    0x1f1f1f);
+    for (unsigned i = 0; i < 2; ++i) {
+        HitId id = i ? HIT_FORWARD : HIT_BACK;
+        Rect rect = scene->hits[id].rect;
+        canvas->box(canvas->context, rect, rect.h / 2, color_mix(0x0b0d10, DARK_HOVER, scene->hover[id]));
+        canvas_icon(canvas, i ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_LEFT,
+                    (Rect){rect.x + 6, rect.y + 6, 16, 16}, scene->hits[id].enabled ? WHITE : 0x737d89);
     }
 
-    canvas_icon(canvas, ICON_SEARCH, (Rect){scene->search.x + 16, 20, 24, 24}, MUTED);
+    Rect top_home = scene->hits[HIT_TOP_HOME].rect;
 
-    Rect input = {scene->search.x + 50, 20, scene->search.w - 68, 24};
-    input_text(scene, canvas, input, scene->query, "What do you want to play?", scene->focus == HIT_SEARCH);
+    if (top_home.w > 0) {
+        canvas->box(canvas->context, top_home, top_home.h / 2,
+                    color_mix(DARK_TILE, DARK_HOVER, scene->hover[HIT_TOP_HOME]));
+        canvas_icon(canvas, ICON_HOME,
+                    (Rect){top_home.x + (top_home.w - 18) / 2, top_home.y + (top_home.h - 18) / 2, 18, 18},
+                    scene->home ? WHITE : color_mix(MUTED, WHITE, scene->hover[HIT_TOP_HOME]));
+    }
+
+    bool search_focused = scene->focus == HIT_SEARCH;
+    Color search_fill = color_mix(DARK_TILE, DARK_HOVER, scene->hover[HIT_SEARCH]);
+    float radius = scene->search.h * 0.5f;
+
+    if (search_focused) {
+        Rect outline = scene->search;
+        canvas->box(canvas->context, outline, radius, 0x596575);
+        canvas->box(canvas->context, (Rect){outline.x + 1, outline.y + 1, outline.w - 2, outline.h - 2},
+                    radius - 1, search_fill);
+    } else {
+        canvas->box(canvas->context, scene->search, radius, search_fill);
+    }
+
+    float icon_size = 17;
+    canvas_icon(canvas, ICON_SEARCH,
+                (Rect){scene->search.x + 13, scene->search.y + (scene->search.h - icon_size) / 2, icon_size,
+                       icon_size},
+                search_focused ? WHITE : color_mix(MUTED, WHITE, scene->hover[HIT_SEARCH]));
+
+    Rect input = {scene->search.x + 38, scene->search.y + 6, scene->search.w - (scene->query[0] ? 70 : 52),
+                  scene->search.h - 12};
+    input_text(scene, canvas, input, scene->query, "Search", HIT_SEARCH, search_focused);
+
+    if (scene->query[0]) {
+        Rect clear = scene->hits[HIT_SEARCH_CLEAR].rect;
+
+        if (scene->hover[HIT_SEARCH_CLEAR] > .01f) {
+            canvas->box(canvas->context, clear, clear.h / 2,
+                        color_mix(search_fill, DARK_HOVER, scene->hover[HIT_SEARCH_CLEAR]));
+        }
+
+        canvas_icon(canvas, ICON_CLOSE,
+                    (Rect){clear.x + (clear.w - 12) / 2, clear.y + (clear.h - 12) / 2, 12, 12},
+                    color_mix(MUTED, WHITE, scene->hover[HIT_SEARCH_CLEAR]));
+    }
+
+    Rect badge = scene->hits[HIT_PLAYING_ON].rect;
+
+    if (scene->hits[HIT_PLAYING_ON].enabled) {
+        float hover = scene->hover[HIT_PLAYING_ON];
+        canvas->box(canvas->context, badge, badge.h / 2, color_mix(0x10264a, 0x173463, hover));
+        canvas->box(canvas->context, (Rect){badge.x + 1, badge.y + 1, badge.w - 2, badge.h - 2}, badge.h / 2 - 1,
+                    color_mix(0x0c1d3a, 0x122a52, hover));
+        canvas_icon(canvas, ICON_SPEAKER, (Rect){badge.x + 11, badge.y + 7, 16, 16}, 0x6cb2ff);
+
+        char playing_on[300];
+        snprintf(playing_on, sizeof(playing_on), "Playing on %s", view->playback.device);
+        canvas->text(canvas->context, playing_on, (Rect){badge.x + 33, badge.y, badge.w - 44, badge.h}, 12,
+                     TEXT_BOLD | TEXT_VCENTER, 0x6cb2ff);
+    }
 
     Rect avatar = scene->hits[HIT_PROFILE].rect;
     canvas->box(canvas->context, avatar, avatar.w / 2,
-                color_mix(0x1f1f1f, 0x333333, scene->hover[HIT_PROFILE]));
+                color_mix(DARK_TILE, DARK_HOVER, scene->hover[HIT_PROFILE]));
     Rect inner = {avatar.x + 3, avatar.y + 3, avatar.w - 6, avatar.h - 6};
-    canvas->clip(canvas->context, inner, inner.w / 2);
-
-    if (!view->profile.artwork[0] || !canvas->image(canvas->context, view->profile.artwork, inner)) {
-        canvas->box(canvas->context, inner, inner.w / 2,
-                    color_mix(0x282828, 0x3a3a3a, scene->hover[HIT_PROFILE]));
+    if (!canvas_artwork(canvas, view->profile.artwork, inner, inner.w / 2)) {
         canvas_icon(canvas, ICON_USER, (Rect){inner.x + 6, inner.y + 6, inner.w - 12, inner.h - 12}, WHITE);
     }
-
-    canvas->unclip(canvas->context);
 }
 
 static void sidebar(Scene *scene, const View *view, Canvas *canvas) {
     Rect bounds = scene->sidebar;
-    canvas->box(canvas->context, bounds, 8, PANEL);
-    canvas_icon(canvas, ICON_LIBRARY, (Rect){20, 79, 20, 20}, MUTED);
-    text(canvas, "Your Library", (Rect){48, 78, bounds.w - 92, 22}, 15, true, WHITE);
-    button(scene, canvas, HIT_REFRESH, NULL, ICON_REFRESH, false);
 
-    pill(scene, canvas, HIT_PLAYLISTS, "Playlists", !scene->home && scene->section == BROWSE_PLAYLISTS);
+    canvas->box(canvas->context, bounds, 0, DARK_CHROME);
+    const HitId nav_ids[] = {HIT_HOME, HIT_SEARCH_NAV};
+    const Icon nav_icons[] = {ICON_HOME, ICON_SEARCH};
+    const char *nav_labels[] = {"Home", "Search"};
+
+    for (unsigned i = 0; i < 2; ++i) {
+        HitId id = nav_ids[i];
+        Rect row = scene->hits[id].rect;
+        bool active = i == 0 ? scene->home : !scene->home && scene->section == BROWSE_SEARCH;
+        if (scene->hover[id] > .01f) {
+            canvas->box(canvas->context, row, 6, color_mix(DARK_CHROME, DARK_HOVER, scene->hover[id]));
+        }
+
+        Color color = active ? WHITE : MUTED;
+        canvas_icon(canvas, nav_icons[i], (Rect){row.x + 10, row.y + 9, 19, 19}, color);
+        canvas->text(canvas->context, nav_labels[i], (Rect){row.x + 40, row.y, row.w - 46, row.h}, 13,
+                     TEXT_BOLD | TEXT_VCENTER, color);
+    }
+
+    line(canvas, 14, 104, bounds.w - 26, DARK_BORDER);
+    canvas_icon(canvas, ICON_LIBRARY, (Rect){17, 118, 17, 17}, MUTED);
+    text(canvas, "Library", (Rect){44, 115, bounds.w - 89, 22}, 13, true, WHITE);
+    button(scene, canvas, HIT_REFRESH, NULL, ICON_REFRESH, false, DARK_CHROME, 16, true);
+
+    pill(scene, canvas, HIT_PLAYLISTS, "Playlists", scene->home || scene->section == BROWSE_PLAYLISTS);
     pill(scene, canvas, HIT_ALBUMS, "Albums", !scene->home && scene->section == BROWSE_SAVED_ALBUMS);
-    text(canvas, "Your collection", (Rect){20, 156, bounds.w - 36, 18}, 12, false, MUTED);
+    pill(scene, canvas, HIT_ARTISTS, "Artists", !scene->home && scene->section == BROWSE_FOLLOWED_ARTISTS);
 
     Rect liked = scene->hits[HIT_TRACKS].rect;
-    canvas->box(canvas->context, liked, 6, color_mix(PANEL, 0x282828, scene->hover[HIT_TRACKS]));
-    artwork(canvas, (Rect){liked.x + 6, liked.y + 6, 44, 44}, 0, false);
-    text(canvas, "Liked Songs", (Rect){liked.x + 58, liked.y + 7, liked.w - 66, 20}, 14, true, WHITE);
-    text(canvas, "Playlist · Saved tracks", (Rect){liked.x + 58, liked.y + 29, liked.w - 66, 18}, 12, false,
-         MUTED);
-    line(canvas, 20, 246, bounds.w - 24, 0x252525);
+    bool liked_active = !scene->home && scene->section == BROWSE_SAVED_TRACKS;
+
+    if (liked_active || scene->hover[HIT_TRACKS] > .01f) {
+        canvas->box(
+            canvas->context, liked, 6,
+            color_mix(liked_active ? DARK_SELECTED : DARK_CHROME, DARK_HOVER, scene->hover[HIT_TRACKS]));
+    }
+
+    artwork(canvas, (Rect){liked.x + 7, liked.y + 7, 39, 39}, 0, false, 6);
+    text(canvas, "Liked Songs", (Rect){liked.x + 56, liked.y + 9, liked.w - 58, 20}, 13, false,
+         liked_active ? GREEN : WHITE);
+    char saved[48];
+
+    if (view->library_loaded[0]) {
+        unsigned total = view->library[0].total;
+        snprintf(saved, sizeof(saved), "Playlist · %u %s", total, total == 1 ? "song" : "songs");
+    } else {
+        snprintf(saved, sizeof(saved), "Playlist · Saved tracks");
+    }
+
+    text(canvas, saved, (Rect){liked.x + 56, liked.y + 27, liked.w - 58, 18}, 11, false, MUTED);
 
     if (view->playlists.count) {
-        canvas->clip(canvas->context, (Rect){bounds.x, 250, bounds.w, bounds.y + bounds.h - 262}, 0);
+        canvas->clip(canvas->context, scene->library_rows, 0);
 
         for (unsigned i = 0; i < 24; ++i) {
             HitId id = (HitId)(HIT_LIBRARY_FIRST + i);
             Rect row = scene->hits[id].rect;
+
             if (row.h <= 0) {
                 continue;
             }
@@ -167,47 +416,108 @@ static void sidebar(Scene *scene, const View *view, Canvas *canvas) {
             if (!item) {
                 continue;
             }
-            canvas->box(canvas->context, row, 6, color_mix(PANEL, 0x282828, scene->hover[id]));
 
-            if (!canvas->image(canvas->context, item->artwork, (Rect){row.x + 6, row.y + 4, 40, 40})) {
-                artwork(canvas, (Rect){row.x + 6, row.y + 4, 40, 40}, 2, false);
+            bool playing_context = item->id[0] &&
+                                   !strncmp(view->playback.context_uri, "spotify:playlist:", 17) &&
+                                   !strcmp(item->id, view->playback.context_uri + 17);
+            bool active =
+                !scene->home &&
+                (scene->section == BROWSE_PLAYLIST_TRACKS || scene->section == BROWSE_ALBUM_TRACKS) &&
+                item->id[0] && !strcmp(item->id, view->list.request.id);
+
+            if (active || scene->hover[id] > .01f) {
+                canvas->box(canvas->context, row, 6,
+                            color_mix(active ? DARK_SELECTED : DARK_CHROME, DARK_HOVER, scene->hover[id]));
             }
 
-            text(canvas, item->title, (Rect){row.x + 56, row.y + 4, row.w - 64, 22}, 13, true, WHITE);
-            text(canvas, item->detail, (Rect){row.x + 56, row.y + 25, row.w - 64, 18}, 12, false, MUTED);
+            draw_rounded_art(canvas, item->artwork, (Rect){row.x + 7, row.y + 7, 39, 39}, 6, 2, false);
+            text(canvas, item->title, (Rect){row.x + 56, row.y + 9, row.w - (playing_context ? 80 : 58), 20},
+                 13, false, active || playing_context ? GREEN : WHITE);
+            char detail[320];
+            snprintf(detail, sizeof(detail), "Playlist%s%s", item->detail[0] ? " · " : "", item->detail);
+            text(canvas, detail, (Rect){row.x + 56, row.y + 27, row.w - (active ? 80 : 58), 18}, 11, false,
+                 MUTED);
+
+            if (playing_context) {
+                canvas_icon(canvas, ICON_VOLUME, (Rect){row.x + row.w - 20, row.y + 19, 14, 14}, GREEN);
+            }
         }
 
         canvas->unclip(canvas->context);
         return;
     }
 
-    text(canvas, "Find your favorites", (Rect){20, 270, bounds.w - 40, 22}, 15, true, WHITE);
-    text(canvas,
-         view->authenticated ? "Browse your saved music using the filters above."
-                             : "Log in to see the music you've saved.",
-         (Rect){20, 298, bounds.w - 40, 56}, 13, false, MUTED);
+    text(canvas, "Your playlists will appear here.", (Rect){18, 255, bounds.w - 36, 52}, 12, false, MUTED);
 }
 
 static void card(Scene *scene, Canvas *canvas, HitId id, const char *title, const char *subtitle,
                  unsigned style, const char *url, bool circle) {
     Rect rect = scene->hits[id].rect;
+
     if (rect.w <= 0 || rect.y + rect.h <= scene->content.y || rect.y >= scene->content.y + scene->content.h) {
         return;
     }
 
     float hover = scene->hover[id];
-    canvas->box(canvas->context, rect, 8, color_mix(PANEL, 0x282828, hover));
+    canvas->box(canvas->context, rect, 8, color_mix(0x181818, 0x282828, hover));
 
     Rect cover = {rect.x + 12, rect.y + 12, rect.w - 24, rect.w - 24};
-    canvas->clip(canvas->context, cover, circle ? cover.w / 2 : 5);
+    draw_rounded_art(canvas, url, cover, circle ? cover.w / 2 : 6, style, true);
+    text(canvas, title, (Rect){rect.x + 12, cover.y + cover.h + 10, rect.w - 24, 22}, 14, true, WHITE);
+    text(canvas, subtitle, (Rect){rect.x + 12, cover.y + cover.h + 34, rect.w - 24, 36}, 12, false, MUTED);
+}
 
-    if (!url || !canvas->image(canvas->context, url, cover)) {
-        artwork(canvas, cover, style, true);
+static void sort_arrow(Canvas *canvas, float x, float cy, bool descending, Color color) {
+    Point up[] = {{x, cy + 2.5f}, {x + 7, cy + 2.5f}, {x + 3.5f, cy - 2.5f}};
+    Point down[] = {{x, cy - 2.5f}, {x + 7, cy - 2.5f}, {x + 3.5f, cy + 2.5f}};
+    canvas->path(canvas->context, descending ? down : up, 3, true, true, 1, color);
+}
+
+static void sort_header(Scene *scene, const View *view, Canvas *canvas, HitId id, const char *label, Rect rect,
+                        bool sortable) {
+    ListSort sort = (ListSort)(id - HIT_SORT_INDEX);
+    bool active = sortable && sort != LIST_SORT_NONE && view->list.sort == sort;
+    Color color = active ? WHITE : color_mix(MUTED, WHITE, sortable ? scene->hover[id] : 0);
+    text(canvas, label, rect, 12, false, color);
+
+    if (!active || !canvas->measure) {
+        return;
     }
 
-    canvas->unclip(canvas->context);
-    text(canvas, title, (Rect){rect.x + 12, cover.y + cover.h + 14, rect.w - 24, 24}, 15, true, WHITE);
-    text(canvas, subtitle, (Rect){rect.x + 12, cover.y + cover.h + 42, rect.w - 24, 38}, 12, false, MUTED);
+    float width = canvas->measure(canvas->context, label, 12);
+    sort_arrow(canvas, rect.x + width + 6, rect.y + rect.h / 2, view->list.sort_descending, GREEN);
+}
+
+static void list_filter(Scene *scene, Canvas *canvas) {
+    Rect box = scene->hits[HIT_LIST_FILTER].rect;
+
+    if (!scene->hits[HIT_LIST_FILTER].enabled) {
+        return;
+    }
+
+    bool focused = scene->focus == HIT_LIST_FILTER;
+    Color fill = color_mix(DARK_TILE, DARK_HOVER, scene->hover[HIT_LIST_FILTER]);
+
+    if (focused) {
+        canvas->box(canvas->context, box, 4, 0x596575);
+        canvas->box(canvas->context, (Rect){box.x + 1, box.y + 1, box.w - 2, box.h - 2}, 3, fill);
+    } else {
+        canvas->box(canvas->context, box, 4, fill);
+    }
+
+    canvas_icon(canvas, ICON_SEARCH, (Rect){box.x + 9, box.y + 8, 16, 16}, focused ? WHITE : MUTED);
+    const char *placeholder = scene->section == BROWSE_SAVED_TRACKS ? "Search in Liked Songs"
+                              : scene->section == BROWSE_SONG_RADIO ? "Search in radio"
+                                                                    : "Search in playlist";
+    input_text(scene, canvas, (Rect){box.x + 32, box.y + 4, box.w - 66, box.h - 8}, scene->list_filter,
+               placeholder, HIT_LIST_FILTER, focused);
+
+    Rect clear = scene->hits[HIT_LIST_FILTER_CLEAR].rect;
+
+    if (scene->hits[HIT_LIST_FILTER_CLEAR].enabled) {
+        canvas_icon(canvas, ICON_CLOSE, (Rect){clear.x + 6, clear.y + 6, 12, 12},
+                    color_mix(MUTED, WHITE, scene->hover[HIT_LIST_FILTER_CLEAR]));
+    }
 }
 
 static void content(Scene *scene, const View *view, Canvas *canvas) {
@@ -225,8 +535,10 @@ static void content(Scene *scene, const View *view, Canvas *canvas) {
     if (scene->section == BROWSE_SAVED_TRACKS) {
         title = "Liked Songs";
     }
+
     if ((scene->section == BROWSE_ALBUM_TRACKS || scene->section == BROWSE_PLAYLIST_TRACKS ||
-         scene->section == BROWSE_ARTIST_ALBUMS) &&
+         scene->section == BROWSE_ARTIST_ALBUMS || scene->section == BROWSE_ARTIST_LIKES ||
+         scene->section == BROWSE_SONG_RADIO) &&
         scene->collection[0]) {
         title = scene->collection;
     }
@@ -236,39 +548,87 @@ static void content(Scene *scene, const View *view, Canvas *canvas) {
     }
 
     if (!grid) {
-        canvas->gradient(canvas->context, (Rect){bounds.x, y, bounds.w, 190}, 0,
-                         color_mix(collection_colors[style], PANEL, .4f), PANEL);
-        Rect cover = {x, y + 24, 136, 136};
+        Color tint = style == 0 ? 0x402b93 : collection_colors[style];
 
-        if (!scene->collection_artwork[0] ||
-            (scene->section != BROWSE_ALBUM_TRACKS && scene->section != BROWSE_PLAYLIST_TRACKS) ||
-            !canvas->image(canvas->context, scene->collection_artwork, cover)) {
-            artwork(canvas, cover, style, true);
+        if (scene->collection_artwork[0] &&
+            (scene->section == BROWSE_ALBUM_TRACKS || scene->section == BROWSE_PLAYLIST_TRACKS ||
+             scene->section == BROWSE_SONG_RADIO)) {
+            artwork_color(scene->collection_artwork, &tint);
         }
-        text(canvas, scene->section == BROWSE_SEARCH ? "SEARCH" : "YOUR COLLECTION",
-             (Rect){x + 156, y + 35, bounds.w - 210, 20}, 11, true, WHITE);
-        text(canvas, title, (Rect){x + 156, y + 68, bounds.w - 210, 58}, 36, true, WHITE);
+
+        Color mid = color_mix(tint, PANEL, .82f);
+        canvas->gradient(canvas->context, (Rect){bounds.x, y, bounds.w, 184}, 0, tint, mid);
+        canvas->gradient(canvas->context, (Rect){bounds.x, y + 184, bounds.w, 52}, 0, mid, PANEL);
+
+        Rect cover = {x, y + 20, 156, 156};
+        const char *cover_url =
+            (scene->section == BROWSE_ALBUM_TRACKS || scene->section == BROWSE_PLAYLIST_TRACKS ||
+             scene->section == BROWSE_ARTIST_LIKES || scene->section == BROWSE_SONG_RADIO)
+                ? scene->collection_artwork
+                : NULL;
+        draw_rounded_art(canvas, cover_url, cover, 6, style, true);
+
+        const char *kind_label = scene->section == BROWSE_SEARCH         ? "Search"
+                                 : scene->section == BROWSE_QUEUE        ? "Queue"
+                                 : scene->section == BROWSE_SAVED_TRACKS ? "Playlist"
+                                                                         : "Playlist";
+        float meta_x = x + 180;
+        float meta_w = bounds.w - 204;
+        text(canvas, kind_label, (Rect){meta_x, y + 48, meta_w, 20}, 13, true, WHITE);
+        text(canvas, title, (Rect){meta_x, y + 72, meta_w, 56}, strlen(title) > 26 || meta_w < 420 ? 30 : 42,
+             true, WHITE);
 
         char summary[384];
         unsigned total = loaded ? view->list.total : 0;
-        snprintf(summary, sizeof(summary), "%u %s", total,
+        char duration[64] = {0};
+
+        if (loaded && view->list.duration_known && view->list.duration_ms > 0) {
+            collection_duration_label(view->list.duration_ms, duration, sizeof(duration));
+        }
+
+        const char *progress = scene->section != BROWSE_ARTIST_LIKES || view->artist_likes_ready ? ""
+                               : view->artist_likes_failed ? " · Incomplete; refresh to retry"
+                                                          : " · Loading liked songs…";
+        snprintf(summary, sizeof(summary), "%u %s%s%s%s", total,
                  scene->section == BROWSE_QUEUE ? "up next"
                  : total == 1                   ? "song"
-                                                : "songs");
+                                                : "songs",
+                 duration[0] ? ", " : "", duration, progress);
+
         if (scene->section == BROWSE_SEARCH && loaded) {
             snprintf(summary, sizeof(summary), "Results for %s", view->list.request.query);
         }
 
-        text(canvas, summary, (Rect){x + 156, y + 137, bounds.w - 210, 22}, 13, false, MUTED);
-        Rect play = scene->hits[HIT_OPEN].rect;
-        canvas->box(canvas->context, play, 28, color_mix(GREEN, 0x3be477, scene->hover[HIT_OPEN]));
-        canvas_icon(canvas, ICON_PLAY, (Rect){play.x + 14, play.y + 14, 28, 28}, BLACK);
-        button(scene, canvas, HIT_LINK, NULL, ICON_LINK, false);
+        if (loaded) {
+            text(canvas, summary, (Rect){meta_x, y + 142, meta_w, 22}, 13, false, 0xe0e0e0);
+        } else if (view->list.loading) {
+            skeleton_block(canvas, (Rect){meta_x, y + 149, meta_w * .38f, 10}, 4);
+        }
 
-        text(canvas, "#", (Rect){x + 8, y + 258, 24, 20}, 13, false, MUTED);
-        text(canvas, "Title", (Rect){x + 48, y + 258, 200, 20}, 13, false, MUTED);
-        text(canvas, "Artist / show", (Rect){x + bounds.w * .58f, y + 258, 160, 20}, 13, false, MUTED);
-        line(canvas, x, y + 279, bounds.w - 48, 0x303030);
+        Rect play = scene->hits[HIT_OPEN].rect;
+        Color play_fill = scene->hits[HIT_OPEN].enabled ? color_mix(GREEN, 0x3be477, scene->hover[HIT_OPEN])
+                                                        : DARK_TILE;
+        canvas->box(canvas->context, play, play.h / 2, play_fill);
+        canvas_icon(canvas, ICON_PLAY, (Rect){play.x + 13, play.y + 13, 18, 18}, BLACK);
+        button(scene, canvas, HIT_LINK, NULL, ICON_LINK, false, PANEL, 20, true);
+        list_filter(scene, canvas);
+
+        bool sortable = scene->hits[HIT_SORT_TITLE].enabled;
+        const char *middle = scene->section == BROWSE_SEARCH ? "Artist / album" : "Album";
+        sort_header(scene, view, canvas, HIT_SORT_INDEX, "#", (Rect){x + 6, y + 254, 24, 20}, sortable);
+        sort_header(scene, view, canvas, HIT_SORT_TITLE, "Title", (Rect){x + 40, y + 254, 110, 20}, sortable);
+        sort_header(scene, view, canvas, HIT_SORT_ALBUM, middle, (Rect){x + bounds.w * .53f, y + 254, 110, 20},
+                    sortable);
+
+        bool by_duration = sortable && view->list.sort == LIST_SORT_DURATION;
+        Color clock = by_duration ? WHITE : color_mix(MUTED, WHITE, scene->hover[HIT_SORT_DURATION]);
+        canvas_icon(canvas, ICON_CLOCK, (Rect){bounds.x + bounds.w - 66, y + 256, 16, 16}, clock);
+
+        if (by_duration) {
+            sort_arrow(canvas, bounds.x + bounds.w - 84, y + 264, view->list.sort_descending, GREEN);
+        }
+
+        line(canvas, x, y + 277, bounds.w - 48, DARK_BORDER);
     }
 
     unsigned count = loaded ? view->list.count : 0;
@@ -279,7 +639,19 @@ static void content(Scene *scene, const View *view, Canvas *canvas) {
         unsigned index = scene->first_row + slot;
         const CatalogItem *item = list_row(&view->list, index);
 
-        if (row.w <= 0 || !item || row.y + row.h <= bounds.y || row.y >= bounds.y + bounds.h) {
+        if (row.w <= 0 || row.y + row.h <= bounds.y || row.y >= bounds.y + bounds.h) {
+            continue;
+        }
+
+        if (!item) {
+            if (view->list.loading && index >= view->list.count) {
+                if (grid) {
+                    skeleton_card(canvas, row, scene->section == BROWSE_FOLLOWED_ARTISTS, 0);
+                } else {
+                    skeleton_row(canvas, row, 48, 40, 100);
+                }
+            }
+
             continue;
         }
 
@@ -290,66 +662,156 @@ static void content(Scene *scene, const View *view, Canvas *canvas) {
         }
 
         bool selected = (int)index == view->list.selected;
-        canvas->box(canvas->context, row, 5,
-                    color_mix(selected ? 0x303030 : PANEL, 0x2a2a2a, scene->hover[id]));
+        float hover = scene->hover[id];
 
-        char number[16];
-        snprintf(number, sizeof(number), "%u", index + 1);
-        text(canvas, number, (Rect){row.x + 16, row.y + 17, 28, 22}, 14, false, MUTED);
-        Rect cover = {row.x + 48, row.y + 8, 40, 40};
-
-        if (!canvas->image(canvas->context, item->artwork[0] ? item->artwork : scene->collection_artwork,
-                           cover)) {
-            artwork(canvas, cover, index + style, false);
+        if (selected || hover > .01f) {
+            canvas->box(canvas->context, row, 6, color_mix(selected ? 0x2a2a2a : 0x1c1c1c, 0x2a2a2a, hover));
         }
-        text(canvas, item->title, (Rect){row.x + 100, row.y + 6, bounds.w * .48f - 110, 24}, 14, true, WHITE);
-        text(canvas, item->playable ? "Spotify" : "Unavailable",
-             (Rect){row.x + 100, row.y + 30, bounds.w * .48f - 110, 20}, 12, false, MUTED);
-        text(canvas, item->detail, (Rect){x + bounds.w * .58f, row.y + 16, bounds.w * .35f - 48, 24}, 13,
-             false, MUTED);
+
+        bool playing = view->playback.uri[0] && strlen(view->playback.uri) > 22 &&
+                       !strcmp(view->playback.uri + strlen(view->playback.uri) - 22, item->id);
+
+        if (playing) {
+            equalizer(canvas, row.x + 15, row.y + 21);
+        } else {
+            char number[16];
+            snprintf(number, sizeof(number), "%u", index + 1);
+            text(canvas, number, (Rect){row.x + 14, row.y + 17, 28, 22}, 14, false, MUTED);
+        }
+
+        Rect cover = scene_song_art(scene, id);
+        draw_rounded_art(canvas, item->artwork[0] ? item->artwork : scene->collection_artwork, cover, 4,
+                         index + style, false);
+        canvas_song_play(canvas, cover, 4, hover, item_can_play(item));
+
+        float title_w = bounds.w * .45f - 104;
+        Color title_color = !item->playable ? 0x777777 : playing ? GREEN : WHITE;
+        text(canvas, item->title, (Rect){row.x + 100, row.y + 7, title_w, 22}, 14, false, title_color);
+
+        float sub_x = row.x + 100;
+        float sub_w = title_w;
+
+        if (item->explicit_content) {
+            canvas->box(canvas->context, (Rect){sub_x, row.y + 33, 13, 13}, 2, 0xa7a7a7);
+            canvas->text(canvas->context, "E", (Rect){sub_x, row.y + 33, 13, 13}, 9,
+                         TEXT_CENTER | TEXT_VCENTER | TEXT_BOLD, PANEL);
+            sub_x += 19;
+            sub_w -= 19;
+        }
+
+        const char *artist_text = item->detail[0] ? item->detail : (item->playable ? "" : "Unavailable");
+        text(canvas, artist_text, (Rect){sub_x, row.y + 29, sub_w, 20}, 12, false,
+             color_mix(MUTED, WHITE, hover * .45f));
+
+        const char *middle_col = item->album_title[0] ? item->album_title : item->detail;
+        float middle_x = x + bounds.w * .53f;
+        text(canvas, middle_col, (Rect){middle_x, row.y + 17, row.x + row.w - 103 - middle_x, 22}, 13, false,
+             color_mix(MUTED, WHITE, hover * .45f));
+
+        if (item->duration_known) {
+            char dur[24];
+            snprintf(dur, sizeof(dur), "%u:%02u", item->duration_ms / 60000, item->duration_ms / 1000 % 60);
+            text(canvas, dur, (Rect){bounds.x + bounds.w - 72, row.y + 17, 44, 22}, 13, false, MUTED);
+        }
     }
 
-    if (!count) {
-        float y = bounds.y + (grid ? 150 : 318);
-        text(canvas, view->list.loading ? "Loading your music…" : "Nothing here yet.",
-             (Rect){x + 12, y, bounds.w - 72, 32}, 20, true, WHITE);
-        text(canvas, view->list.loading ? "" : "Choose a collection or search above.",
-             (Rect){x + 12, y + 42, bounds.w - 72, 32}, 13, false, MUTED);
+    if (!count && !view->list.loading && view->list.filter[0]) {
+        char message[SEARCH_CAPACITY + 32];
+        snprintf(message, sizeof(message), "No songs match \"%s\".", view->list.filter);
+        text(canvas, message, (Rect){x + 12, y + 318, bounds.w - 72, 32}, 16, true, WHITE);
+        return;
     }
 
-    if (count && view->list.loading && view->list.more) {
-        text(canvas, "Loading more…", (Rect){x, bounds.y + bounds.h - 36, bounds.w - 48, 20}, 12, false,
-             MUTED);
+    if (!count && !view->list.loading) {
+        float empty_y = bounds.y + (grid ? 150 : 318);
+        text(canvas, "Nothing here yet.", (Rect){x + 12, empty_y, bounds.w - 72, 32}, 20, true, WHITE);
+        text(canvas, "Choose a collection or search above.", (Rect){x + 12, empty_y + 42, bounds.w - 72, 32},
+             13, false, MUTED);
     }
 }
 
 static void player(Scene *scene, const View *view, Canvas *canvas) {
-    float y = scene->height - 88;
-    float title_width = scene->width < 1100 ? 148 : 180;
-    canvas->box(canvas->context, scene->player, 0, BLACK);
-    if (!canvas->image(canvas->context, view->playback.artwork, (Rect){16, y + 12, 56, 56})) {
-        artwork(canvas, (Rect){16, y + 12, 56, 56}, 1, false);
-    }
-    text(canvas, view->playback.title[0] ? view->playback.title : "Nothing playing yet",
-         (Rect){88, y + 18, title_width, 24}, 13, true, WHITE);
-    text(canvas, view->playback.title[0] ? view->playback.artist : "Choose a track from your library",
-         (Rect){88, y + 40, title_width, 20}, 11, false, MUTED);
+    float y = scene->player.y;
+    const char *title = view->playback.title[0] ? view->playback.title : "Nothing playing yet";
+    const char *artist = view->playback.title[0] ? view->playback.artist : "Choose a track from your library";
+    float title_x = 77.0f;
 
-    button(scene, canvas, HIT_PREVIOUS, NULL, ICON_PREVIOUS, false);
-    button(scene, canvas, HIT_PLAY, NULL, view->playback.playing ? ICON_PAUSE : ICON_PLAY, true);
-    button(scene, canvas, HIT_NEXT, NULL, ICON_NEXT, false);
-    button(scene, canvas, HIT_DEVICES, NULL, ICON_DEVICE, false);
-    button(scene, canvas, HIT_QUEUE, NULL, ICON_QUEUE, false);
-    button(scene, canvas, HIT_NOW_PLAYING, NULL, ICON_ALBUM, false);
-    button(scene, canvas, HIT_LYRICS, NULL, ICON_LYRICS, false);
-    canvas_icon(canvas, ICON_SHUFFLE, scene->hits[HIT_SHUFFLE].rect, view->playback.shuffle ? GREEN : MUTED);
-    canvas_icon(canvas, ICON_REPEAT, scene->hits[HIT_REPEAT].rect,
-                view->playback.repeat != REPEAT_OFF ? GREEN : MUTED);
+    if (view->playback.title[0] && canvas->measure) {
+        float title_w = canvas->measure(canvas->context, title, 13);
+        float artist_w = canvas->measure(canvas->context, artist, 11);
+        float measured = title_w > artist_w ? title_w : artist_w;
+
+        scene->player_title_w = title_w;
+        scene->player_artist_w = artist_w;
+        scene->player_text_w = measured;
+        scene->player_text_measured = true;
+        copy_utf8(scene->player_measured_title, sizeof(scene->player_measured_title), title);
+        copy_utf8(scene->player_measured_artist, sizeof(scene->player_measured_artist), artist);
+        scene_player_update_text_hits(scene, view, title_w, artist_w);
+    }
+
+    bool has_like = scene->hits[HIT_PLAYER_LIKE].enabled;
+    float title_width = scene_player_text_limit(scene, has_like);
+
+    canvas->box(canvas->context, scene->player, 0, DARK_CHROME);
+    line(canvas, 0, y, scene->width, DARK_BORDER);
+    draw_rounded_art(canvas, view->playback.artwork, (Rect){18, y + 14, 49, 49}, 6, 1, false);
+
+    bool song_hot = scene->hits[HIT_PLAYER_SONG].enabled && scene->hover[HIT_PLAYER_SONG] > .05f;
+    bool artist_hot = scene->hits[HIT_PLAYER_ARTIST].enabled && scene->hover[HIT_PLAYER_ARTIST] > .05f;
+    Color song_color = WHITE;
+    Color artist_color = scene->hits[HIT_PLAYER_ARTIST].enabled
+                             ? color_mix(MUTED, WHITE, scene->hover[HIT_PLAYER_ARTIST])
+                             : MUTED;
+    text(canvas, title, (Rect){title_x, y + 21, title_width, 20}, 13, false, song_color);
+
+    if (song_hot && scene->hits[HIT_PLAYER_SONG].rect.w > 0.0f) {
+        line(canvas, title_x, y + 38.0f, scene->hits[HIT_PLAYER_SONG].rect.w, song_color);
+    }
+
+    text(canvas, artist, (Rect){title_x, y + 39, title_width, 17}, 11, false, artist_color);
+
+    if (artist_hot && scene->hits[HIT_PLAYER_ARTIST].rect.w > 0.0f) {
+        line(canvas, title_x, y + 54.0f, scene->hits[HIT_PLAYER_ARTIST].rect.w, artist_color);
+    }
+
+    button(scene, canvas, HIT_PREVIOUS, NULL, ICON_PREVIOUS, false, DARK_CHROME, 15, true);
+    button(scene, canvas, HIT_PLAY, NULL, view->playback.playing ? ICON_PAUSE : ICON_PLAY, true, DARK_CHROME,
+           14, false);
+    button(scene, canvas, HIT_NEXT, NULL, ICON_NEXT, false, DARK_CHROME, 15, true);
+    button(scene, canvas, HIT_MUTE, NULL, scene->draft.volume == 0 && scene->hits[HIT_MUTE].enabled ? ICON_MUTE : ICON_VOLUME,
+           false, DARK_CHROME, 17, true);
+    button(scene, canvas, HIT_QUEUE, NULL, ICON_QUEUE, false, DARK_CHROME, 15, true);
+    button(scene, canvas, HIT_DEVICES, NULL, ICON_SPEAKER, false, DARK_CHROME, 16, true);
+    button(scene, canvas, HIT_LYRICS, NULL, ICON_LYRICS, false, DARK_CHROME, 15, true);
+
+    Rect shuffle = scene->hits[HIT_SHUFFLE].rect;
+    Color shuffle_color =
+        !scene->hits[HIT_SHUFFLE].enabled
+            ? 0x555555
+            : (view->playback.shuffle ? color_mix(GREEN, 0x3be477, scene->hover[HIT_SHUFFLE])
+                                      : color_mix(MUTED, WHITE, scene->hover[HIT_SHUFFLE]));
+    canvas_icon(canvas, ICON_SHUFFLE, (Rect){shuffle.x + 6, shuffle.y + 6, 16, 16}, shuffle_color);
+
+    if (view->playback.shuffle) {
+        canvas->ellipse(canvas->context, (Rect){shuffle.x + 12, shuffle.y + 25, 4, 4}, true, 1, GREEN);
+    }
+
+    Rect repeat = scene->hits[HIT_REPEAT].rect;
+    bool repeat_on = view->playback.repeat != REPEAT_OFF;
+    Color repeat_color = !scene->hits[HIT_REPEAT].enabled
+                             ? 0x555555
+                             : (repeat_on ? color_mix(GREEN, 0x3be477, scene->hover[HIT_REPEAT])
+                                          : color_mix(MUTED, WHITE, scene->hover[HIT_REPEAT]));
+    canvas_icon(canvas, ICON_REPEAT, (Rect){repeat.x + 6, repeat.y + 6, 16, 16}, repeat_color);
+
+    if (repeat_on) {
+        canvas->ellipse(canvas->context, (Rect){repeat.x + 12, repeat.y + 25, 4, 4}, true, 1, GREEN);
+    }
 
     if (view->playback.repeat == REPEAT_TRACK) {
-        Rect rect = scene->hits[HIT_REPEAT].rect;
-        canvas->text(canvas->context, "1", (Rect){rect.x + 7, rect.y + 5, 10, 14}, 9,
-                     TEXT_CENTER | TEXT_VCENTER, GREEN);
+        canvas->text(canvas->context, "1", (Rect){repeat.x + 9, repeat.y + 7, 10, 14}, 8,
+                     TEXT_BOLD | TEXT_CENTER | TEXT_VCENTER, GREEN);
     }
 
     Rect seek = scene->hits[HIT_SEEK].rect;
@@ -358,70 +820,46 @@ static void player(Scene *scene, const View *view, Canvas *canvas) {
         : view->playback.duration_ms
             ? (unsigned)((uint64_t)view->playback.position_ms * 1000 / view->playback.duration_ms)
             : 0;
+
     if (fraction > 1000) {
         fraction = 1000;
     }
-    canvas->box(canvas->context, (Rect){seek.x, seek.y + 5, seek.w, 4}, 2, 0x4d4d4d);
-    canvas->box(canvas->context, (Rect){seek.x, seek.y + 5, seek.w * fraction / 1000, 4}, 2,
-                scene->hot == HIT_SEEK ? GREEN : WHITE);
+
+    bool hot_seek = scene->hot == HIT_SEEK || scene->dragging == HIT_SEEK;
+    float seek_fill = seek.w * fraction / 1000;
+    canvas->box(canvas->context, (Rect){seek.x, seek.y + 6, seek.w, 2}, 1, 0x484e58);
+    canvas->box(canvas->context, (Rect){seek.x, seek.y + 6, seek_fill, 2}, 1, hot_seek ? GREEN : WHITE);
+
+    if (hot_seek && scene->hits[HIT_SEEK].enabled) {
+        float knob = 8;
+        canvas->ellipse(canvas->context,
+                        (Rect){seek.x + seek_fill - knob / 2, seek.y + 7 - knob / 2, knob, knob}, true, 1,
+                        WHITE);
+    }
 
     char position[24];
     unsigned milliseconds = scene->dragging == HIT_SEEK
                                 ? (unsigned)((uint64_t)view->playback.duration_ms * scene->draft.seek / 1000)
                                 : view->playback.position_ms;
     snprintf(position, sizeof(position), "%u:%02u", milliseconds / 60000, milliseconds / 1000 % 60);
-    text(canvas, position, (Rect){seek.x - 42, seek.y - 2, 38, 18}, 10, false, MUTED);
+    canvas->text(canvas->context, position, (Rect){seek.x - 36, seek.y, 32, 14}, 10,
+                 TEXT_CENTER | TEXT_VCENTER, MUTED);
     snprintf(position, sizeof(position), "%u:%02u", view->playback.duration_ms / 60000,
              view->playback.duration_ms / 1000 % 60);
-    text(canvas, position, (Rect){seek.x + seek.w + 8, seek.y - 2, 40, 18}, 10, false, MUTED);
+    text(canvas, position, (Rect){seek.x + seek.w + 6, seek.y, 35, 14}, 10, false, MUTED);
 
     Rect volume = scene->hits[HIT_VOLUME].rect;
-    canvas_icon(canvas, ICON_VOLUME, (Rect){volume.x - 28, volume.y - 2, 20, 20}, MUTED);
-    canvas->box(canvas->context, (Rect){volume.x, volume.y + 6, volume.w, 4}, 2, 0x4d4d4d);
-    canvas->box(canvas->context, (Rect){volume.x, volume.y + 6, volume.w * scene->draft.volume / 100, 4}, 2,
-                WHITE);
-}
+    bool hot_volume = scene->hot == HIT_VOLUME || scene->dragging == HIT_VOLUME;
+    float vol_fill = volume.w * scene->draft.volume / 100;
+    canvas->box(canvas->context, (Rect){volume.x, volume.y + 7, volume.w, 2}, 1, 0x484e58);
+    canvas->box(canvas->context, (Rect){volume.x, volume.y + 7, vol_fill, 2}, 1, hot_volume ? GREEN : WHITE);
 
-static void devices(Scene *scene, const View *view, Canvas *canvas) {
-    if (!scene->device_popup) {
-        return;
+    if (hot_volume && scene->hits[HIT_VOLUME].enabled) {
+        float knob = 8;
+        canvas->ellipse(canvas->context,
+                        (Rect){volume.x + vol_fill - knob / 2, volume.y + 8 - knob / 2, knob, knob}, true, 1,
+                        WHITE);
     }
-
-    Rect bounds = scene->device_panel;
-    canvas->box(canvas->context, (Rect){bounds.x - 4, bounds.y - 4, bounds.w + 8, bounds.h + 8}, 12,
-                0x080808);
-    canvas->box(canvas->context, bounds, 10, 0x282828);
-    text(canvas, "Where to play", (Rect){bounds.x + 20, bounds.y + 8, 245, 28}, 18, true, WHITE);
-    button(scene, canvas, HIT_CLOSE_DEVICES, NULL, ICON_CLOSE, false);
-
-    for (unsigned i = 0; i < view->devices.count; ++i) {
-        HitId id = (HitId)(HIT_DEVICE_FIRST + i);
-        Rect row = scene->hits[id].rect;
-        if (row.h <= 0) {
-            continue;
-        }
-
-        bool selected = (int)i == view->devices.selected;
-        canvas->box(canvas->context, row, 5,
-                    selected ? 0x404040 : color_mix(0x282828, 0x383838, scene->hover[id]));
-        canvas_icon(canvas, ICON_DEVICE, (Rect){row.x + 8, row.y + 10, 20, 20}, selected ? GREEN : WHITE);
-        bool local = view->engine_device_id[0] && !strcmp(view->devices.items[i].id, view->engine_device_id);
-        text(canvas, local ? "This computer" : view->devices.items[i].name,
-             (Rect){row.x + 42, row.y + 8, row.w - 52, 24}, 13, false, WHITE);
-    }
-
-    if (!view->devices.count) {
-        text(canvas, view->engine == ENGINE_READY ? "Looking for your devices…" : "No other devices found.",
-             (Rect){bounds.x + 20, bounds.y + 58, 280, 48}, 13, false, MUTED);
-    }
-
-    const Device *selected = devices_selected(&view->devices);
-    bool local = selected && view->engine_device_id[0] && !strcmp(selected->id, view->engine_device_id);
-    button(scene, canvas, HIT_TRANSFER,
-           view->engine != ENGINE_READY ? "Set up this computer"
-           : local                      ? "Play on this computer"
-                                        : "Transfer playback",
-           ICON_DEVICE, true);
 }
 
 static void setup(Scene *scene, const View *view, Canvas *canvas) {
@@ -451,7 +889,7 @@ static void setup(Scene *scene, const View *view, Canvas *canvas) {
     canvas_icon(canvas, ICON_DEVICE, (Rect){panel.x + 32, panel.y + 30, 28, 28}, GREEN);
     text(canvas, "Play on this computer", (Rect){panel.x + 72, panel.y + 28, panel.w - 130, 32}, 20, true,
          WHITE);
-    button(scene, canvas, HIT_CLOSE_SETUP, NULL, ICON_CLOSE, false);
+    button(scene, canvas, HIT_CLOSE_SETUP, NULL, ICON_CLOSE, false, 0x282828, 18, true);
     text(canvas, message, (Rect){panel.x + 32, panel.y + 84, panel.w - 64, 96}, 14, false, MUTED);
 
     // A rejected paste keeps the instructions visible and explains the problem underneath.
@@ -459,10 +897,11 @@ static void setup(Scene *scene, const View *view, Canvas *canvas) {
         text(canvas, view->engine_message, (Rect){panel.x + 32, panel.y + 188, panel.w - 64, 48}, 13, false,
              0xf3727f);
     }
+
     Rect key = scene->hits[HIT_SETUP_KEY].rect;
     canvas->box(canvas->context, key, key.h / 2, color_mix(0x3a3a3a, 0x4d4d4d, scene->hover[HIT_SETUP_KEY]));
     canvas->text(canvas->context, "Get your key", key, 14, TEXT_BOLD | TEXT_CENTER | TEXT_VCENTER, WHITE);
-    button(scene, canvas, HIT_SETUP_PASTE, "Paste key", ICON_LINK, true);
+    button(scene, canvas, HIT_SETUP_PASTE, "Paste key", ICON_LINK, true, 0x282828, 18, false);
 
     if (scene->hits[HIT_SETUP_FORGET].enabled) {
         canvas->text(canvas->context, "Remove key", scene->hits[HIT_SETUP_FORGET].rect, 12,
@@ -475,11 +914,34 @@ static void centered_text(Canvas *canvas, const char *value, Rect rect, float si
                  TEXT_CENTER | (bold ? TEXT_BOLD : 0) | (rect.h <= size * 2 ? TEXT_VCENTER : 0), color);
 }
 
+static void intro(Scene *scene, const View *view, Canvas *canvas) {
+    float cx = scene->width * 0.5f;
+    float cy = scene->height * 0.5f;
+    canvas->box(canvas->context, (Rect){cx - 180, cy - 150, 360, 290}, 20,
+                color_mix(PANEL, DARK_TILE, 0.35f));
+    canvas_brand_logo(canvas, (Rect){cx - 46, cy - 114, 92, 92});
+    centered_text(canvas, "Native Spotify", (Rect){cx - 160, cy - 4, 320, 36}, 26, true, WHITE);
+    centered_text(canvas, view->authenticated ? "Loading your music…" : "Connecting to Spotify…",
+                  (Rect){cx - 160, cy + 36, 320, 24}, 13, false, MUTED);
+
+    Rect track = {cx - 96, cy + 82, 192, 4};
+    canvas->box(canvas->context, track, 2, DARK_TILE);
+    float phase = (float)(platform_milliseconds() % 1300) / 1300.0f;
+    float pill_w = 64.0f;
+    float pill_x = track.x - pill_w * 0.5f + phase * (track.w + pill_w * 0.5f);
+    float left = pill_x < track.x ? track.x : pill_x;
+    float right = pill_x + pill_w > track.x + track.w ? track.x + track.w : pill_x + pill_w;
+
+    if (right > left) {
+        canvas->box(canvas->context, (Rect){left, track.y, right - left, track.h}, 2, 0x8b5cf6);
+    }
+}
+
 static void login(Scene *scene, const View *view, Canvas *canvas) {
     Rect panel = scene->login_panel;
-    canvas->gradient(canvas->context, panel, 16, 0x1c1c1c, PANEL);
+    canvas->gradient(canvas->context, panel, 16, DARK_TILE, PANEL);
     canvas->clip(canvas->context, panel, 16);
-    canvas_icon(canvas, ICON_ALBUM, (Rect){panel.x + panel.w / 2 - 18, panel.y + 36, 36, 36}, GREEN);
+    canvas_brand_logo(canvas, (Rect){panel.x + panel.w / 2 - 24, panel.y + 30, 48, 48});
     centered_text(canvas, "Native Spotify", (Rect){panel.x + 40, panel.y + 84, panel.w - 80, 30}, 21, true,
                   WHITE);
     centered_text(canvas, "Log in to Spotify", (Rect){panel.x + 32, panel.y + 136, panel.w - 64, 48}, 32,
@@ -487,12 +949,103 @@ static void login(Scene *scene, const View *view, Canvas *canvas) {
     centered_text(canvas, "Your music and playlists. A lighter native player.",
                   (Rect){panel.x + 40, panel.y + 196, panel.w - 80, 44}, 14, false, MUTED);
     button(scene, canvas, HIT_ACCOUNT, view->connecting ? "Connecting…" : "Continue with Spotify", ICON_LINK,
-           true);
+           true, PANEL, 18, false);
     centered_text(canvas, "Secure sign-in opens in your browser.",
                   (Rect){panel.x + 40, panel.y + 330, panel.w - 80, 24}, 12, false, MUTED);
     centered_text(canvas, view->status, (Rect){panel.x + 40, panel.y + 370, panel.w - 80, 56}, 12, false,
                   MUTED);
     canvas->unclip(canvas->context);
+}
+
+static void song_heart(Scene *scene, Canvas *canvas, HitId id, bool liked) {
+    Rect rect = scene->hits[id].rect;
+
+    if (!scene->hits[id].enabled) {
+        return;
+    }
+
+    canvas_icon(canvas, liked ? ICON_HEART : ICON_HEART_OUTLINE,
+                (Rect){rect.x + (rect.w - 18) / 2, rect.y + (rect.h - 18) / 2, 18, 18},
+                liked ? GREEN : color_mix(MUTED, WHITE, scene->hover[id]));
+}
+
+static void list_hearts(Scene *scene, const View *view, Canvas *canvas, HitId first, HitId last) {
+    for (HitId id = first; id <= last; ++id) {
+        HitId parent = id == HIT_TOP_LIKE ? HIT_SEARCH_TOP
+                     : id <= HIT_ROW_LIKE_LAST ? HIT_ROW_FIRST + id - HIT_ROW_LIKE_FIRST
+                                              : HIT_POPULAR_FIRST + id - HIT_POPULAR_LIKE_FIRST;
+
+        if (scene->hot != id && scene->focus != id && scene->hot != parent && scene->hover[parent] <= .01f) {
+            continue;
+        }
+
+        const CatalogItem *item = scene_like_item(scene, view, id);
+
+        if (item) {
+            song_heart(scene, canvas, id, item->liked);
+        }
+    }
+}
+
+static void search_history(Scene *scene, const View *view, Canvas *canvas) {
+    Rect panel = scene->search_history_panel;
+
+    if (!scene->search_history_open || panel.w <= 0) {
+        return;
+    }
+
+    canvas->box(canvas->context, panel, 8, DARK_TILE);
+    text(canvas, "Recent searches", (Rect){panel.x + 14, panel.y + 7, panel.w - 28, 22}, 13, true, WHITE);
+
+    if (!view->search_history_count) {
+        text(canvas, "No recent songs", (Rect){panel.x + 14, panel.y + 34, panel.w - 28, 28}, 12, false, MUTED);
+        return;
+    }
+
+    Rect list = {panel.x + 5, panel.y + 34, panel.w - 10, scene->search_history_scroll.viewport};
+    canvas->clip(canvas->context, list, 0);
+
+    for (unsigned i = 0; i < view->search_history_count; ++i) {
+        HitId id = (HitId)(HIT_HISTORY_FIRST + i);
+        HitId like = (HitId)(HIT_HISTORY_LIKE_FIRST + i);
+        HitId remove = (HitId)(HIT_HISTORY_REMOVE_FIRST + i);
+        Rect row = scene->hits[id].rect;
+
+        if (row.w <= 0) {
+            continue;
+        }
+
+        const CatalogItem *item = &view->search_history[i];
+        bool active = scene->hot == id || scene->hot == like || scene->hot == remove || scene->focus == id;
+
+        if (active) {
+            canvas->box(canvas->context, row, 5, DARK_HOVER);
+        }
+
+        artwork_pin(item->artwork);
+        Rect art = scene_song_art(scene, id);
+        draw_rounded_art(canvas, item->artwork, art, 4, i, false);
+        canvas_song_play(canvas, art, 4, scene->hover[id], item_can_play(item));
+        text(canvas, item->title, (Rect){row.x + 56, row.y + 5, row.w - 122, 21}, 13, true, WHITE);
+        text(canvas, item->detail, (Rect){row.x + 56, row.y + 26, row.w - 122, 18}, 12, false, MUTED);
+        Rect clear = scene->hits[remove].rect;
+
+        if (clear.w > 0) {
+            canvas_icon(canvas, ICON_CLOSE, (Rect){clear.x + 6, clear.y + 6, 14, 14},
+                        color_mix(MUTED, WHITE, scene->hover[remove]));
+        }
+
+        if (active || scene->focus == like) {
+            song_heart(scene, canvas, like, item->liked);
+        }
+    }
+
+    canvas->unclip(canvas->context);
+    Rect thumb = scroll_thumb(&scene->search_history_scroll, (Rect){panel.x + panel.w - 6, list.y, 3, list.h});
+
+    if (thumb.h > 0) {
+        canvas->box(canvas->context, thumb, 2, DARK_MUTED);
+    }
 }
 
 void scene_draw(Scene *scene, const View *view, Canvas *canvas) {
@@ -511,9 +1064,17 @@ void scene_draw(Scene *scene, const View *view, Canvas *canvas) {
         artwork_pin(view->profile.following[i].artwork);
     }
 
-    if (scene->panel == PANEL_QUEUE) {
-        for (unsigned i = 0; i < 16 && scene->panel_first + i < view->queue.count; ++i) {
-            artwork_pin(view->queue.items[scene->panel_first + i].artwork);
+    if (scene->panel == PANEL_QUEUE && scene->panel_recent) {
+        for (unsigned i = 0; i < view->recent_count; ++i) {
+            artwork_pin(view->recent[i].artwork);
+        }
+    } else if (scene->panel == PANEL_QUEUE) {
+        for (unsigned i = 0; i < QUEUE_VISIBLE_SLOTS; ++i) {
+            const CatalogItem *item = queue_row(&view->queue, scene->panel_first + i);
+
+            if (item) {
+                artwork_pin(item->artwork);
+            }
         }
     }
 
@@ -525,23 +1086,25 @@ void scene_draw(Scene *scene, const View *view, Canvas *canvas) {
         for (unsigned i = 0; i < view->search_album_count; ++i) {
             artwork_pin(view->search_albums[i].artwork);
         }
+
+        for (unsigned i = 0; i < view->search_playlist_count; ++i) {
+            artwork_pin(view->search_playlists[i].artwork);
+        }
     }
 
-    for (unsigned i = 0; i < 10; ++i) {
-        const CatalogItem *item = scene->home ? scene_home_item(view, i) : NULL;
+    for (unsigned i = 0; scene->home && i < 3 * HOME_SHELF_COLUMNS; ++i) {
+        const CatalogItem *item = scene_home_item(view, i);
 
-        if (item) {
+        if (item && scene->hits[HIT_CARD_FIRST + i].enabled) {
             artwork_pin(item->artwork);
         }
     }
 
-    if (view->profile.artwork[0]) {
-        artwork_pin(view->profile.artwork);
-    }
+    for (unsigned i = 1; scene->home && i <= HIT_HOME_QUICK_LAST - HIT_HOME_QUICK_FIRST; ++i) {
+        const CatalogItem *item = scene_home_quick_item(view, i);
 
-    if (scene->home) {
-        for (unsigned i = 0; i < view->recent_count; ++i) {
-            artwork_pin(view->recent[i].artwork);
+        if (item && scene->hits[HIT_HOME_QUICK_FIRST + i].enabled) {
+            artwork_pin(item->artwork);
         }
     }
 
@@ -561,21 +1124,35 @@ void scene_draw(Scene *scene, const View *view, Canvas *canvas) {
         }
     }
 
-    canvas->box(canvas->context, (Rect){0, 0, scene->width, scene->height}, 0, BLACK);
+    canvas->box(canvas->context, (Rect){0, 0, scene->width, scene->height}, 0, PANEL);
+
+    if (scene->intro_screen) {
+        intro(scene, view, canvas);
+        return;
+    }
 
     if (scene->login_screen) {
         login(scene, view, canvas);
         return;
     }
 
-    header(scene, view, canvas);
+    if (scene->lyrics_fullscreen) {
+        player(scene, view, canvas);
+        song_heart(scene, canvas, HIT_PLAYER_LIKE, view->playback_liked);
+        panel_scene_draw(scene, view, canvas);
+        scene_scrollbars(scene, canvas);
+            setup(scene, view, canvas);
+        return;
+    }
+
     sidebar(scene, view, canvas);
-    canvas->box(canvas->context, scene->content, 8, PANEL);
-    canvas->clip(canvas->context, scene->content, 8);
+    header(scene, view, canvas);
+    canvas->clip(canvas->context, scene->content, 0);
 
     if (scene->home) {
         home_scene_draw(scene, view, canvas);
     }
+
     if (!scene->home && scene->section == BROWSE_SEARCH) {
         search_scene_draw(scene, view, canvas);
     }
@@ -584,35 +1161,66 @@ void scene_draw(Scene *scene, const View *view, Canvas *canvas) {
         collection_scene_draw(scene, view, canvas);
     }
 
-    if (!scene->home && scene->section != BROWSE_SEARCH && !collection_page(scene->section)) {
+    if (!scene->home && scene->section == BROWSE_SETTINGS) {
+        settings_scene_draw(scene, view, canvas);
+    }
+
+    if (!scene->home && scene->section != BROWSE_SEARCH && scene->section != BROWSE_SETTINGS &&
+        !collection_page(scene->section)) {
         content(scene, view, canvas);
+    }
+
+    if (!scene->home && scene->section != BROWSE_SETTINGS) {
+        list_hearts(scene, view, canvas, HIT_TOP_LIKE, HIT_POPULAR_LIKE_LAST);
     }
 
     if (view->status[0]) {
         Rect notice = {scene->content.x + 24, scene->content.y + scene->content.h - 52,
                        scene->content.w - 150, 36};
-        canvas->box(canvas->context, notice, 6, 0x282828);
+        canvas->box(canvas->context, notice, 8, 0x363636);
+        canvas->box(canvas->context, (Rect){notice.x + 1, notice.y + 1, notice.w - 2, notice.h - 2}, 7,
+                    0x222222);
         text(canvas, view->status, (Rect){notice.x + 12, notice.y + 8, notice.w - 24, 20}, 12, false, MUTED);
     }
 
     canvas->unclip(canvas->context);
     player(scene, view, canvas);
+    song_heart(scene, canvas, HIT_PLAYER_LIKE, view->playback_liked);
     panel_scene_draw(scene, view, canvas);
+    search_history(scene, view, canvas);
     scene_scrollbars(scene, canvas);
-    devices(scene, view, canvas);
     setup(scene, view, canvas);
 
     if (scene->menu.open) {
         Rect r = scene->menu.rect;
         canvas->box(canvas->context, (Rect){r.x - 2, r.y - 2, r.w + 4, r.h + 4}, 10, 0x080808);
-        canvas->box(canvas->context, r, 8, 0x282828);
+        canvas->box(canvas->context, r, 8, DARK_TILE);
 
         for (unsigned i = 0; i < scene->menu.count && i < 6; ++i) {
             HitId id = (HitId)(HIT_CTX_FIRST + i);
             Rect row = scene->hits[id].rect;
-            canvas->box(canvas->context, row, 4, color_mix(0x282828, 0x3e3e3e, scene->hover[id]));
-            text(canvas, scene->menu.labels[i], (Rect){row.x + 12, row.y + 4, row.w - 24, 24}, 13, false,
-                 WHITE);
+            canvas->box(canvas->context, row, 4, color_mix(DARK_TILE, DARK_HOVER, scene->hover[id]));
+            static const Icon icons[] = {
+                [CTX_PLAY] = ICON_PLAY,    [CTX_QUEUE] = ICON_QUEUE,  [CTX_DEQUEUE] = ICON_CLOSE,       [CTX_RADIO] = ICON_RADIO,
+                [CTX_ALBUM] = ICON_ALBUM,  [CTX_ARTIST] = ICON_USER,       [CTX_LINK] = ICON_EXTERNAL_LINK,
+                [CTX_PROFILE] = ICON_USER, [CTX_SETTINGS] = ICON_SETTINGS, [CTX_LOGOUT] = ICON_LOGOUT};
+            ContextAction action = scene->menu.actions[i];
+            Icon icon = icons[action];
+
+            if (action == CTX_LOGOUT && !view->authenticated) {
+                icon = ICON_LOGIN;
+            }
+
+            if (action == CTX_PLAY && !item_can_play(&scene->menu.item)) {
+                icon = scene->menu.item.kind == ITEM_ALBUM    ? ICON_ALBUM
+                       : scene->menu.item.kind == ITEM_ARTIST ? ICON_USER
+                                                              : ICON_PLAYLIST;
+            }
+
+            canvas_icon(canvas, icon, (Rect){row.x + 10, row.y + (row.h - 18) / 2, 18, 18},
+                        color_mix(MUTED, WHITE, scene->hover[id]));
+            canvas->text(canvas->context, scene->menu.labels[i],
+                         (Rect){row.x + 38, row.y, row.w - 48, row.h}, 13, TEXT_VCENTER, WHITE);
         }
     }
 }

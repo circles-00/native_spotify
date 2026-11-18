@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "app.h"
+#include "canvas.h"
 #include "controller.h"
 #include "linux_canvas.h"
 #include "ui.h"
@@ -27,10 +28,13 @@ typedef struct {
     cairo_surface_t *surface;
     cairo_surface_t *buffer;
     XIC input;
-    Atom clipboard, utf8, paste, key_paste, close;
+    Atom clipboard, utf8, targets, paste, key_paste, close;
     Cursor hand, caret;
     bool focused, input_active, visible;
+    bool lyrics_fullscreen;
     int width, height;
+    char clipboard_text[SEARCH_CAPACITY];
+    size_t clipboard_size;
     UiController controller;
     LinuxCanvas backend;
 } NativeWindow;
@@ -88,9 +92,11 @@ static void draw(NativeWindow *window) {
     }
 
     cairo_t *paint = cairo_create(window->buffer);
+    float scale = scene_view_scale(window->width, window->height, 1.0f);
+    cairo_scale(paint, scale, scale);
     Canvas canvas;
     linux_canvas_begin(&window->backend, paint, &canvas);
-    ui_controller_draw(&window->controller, (float)window->width, (float)window->height, &canvas);
+    ui_controller_draw(&window->controller, window->width / scale, window->height / scale, &canvas);
     linux_canvas_end(&window->backend);
     input_focus(window);
 
@@ -123,17 +129,33 @@ static bool mapped_key(KeySym symbol, SceneKey *mapped) {
     case XK_BackSpace:
         *mapped = KEY_BACKSPACE;
         return true;
+    case XK_Delete:
+    case XK_KP_Delete:
+        *mapped = KEY_DELETE;
+        return true;
     case XK_Left:
+    case XK_KP_Left:
         *mapped = KEY_LEFT;
         return true;
     case XK_Right:
+    case XK_KP_Right:
         *mapped = KEY_RIGHT;
         return true;
     case XK_Up:
+    case XK_KP_Up:
         *mapped = KEY_UP;
         return true;
     case XK_Down:
+    case XK_KP_Down:
         *mapped = KEY_DOWN;
+        return true;
+    case XK_Home:
+    case XK_KP_Home:
+        *mapped = KEY_HOME;
+        return true;
+    case XK_End:
+    case XK_KP_End:
+        *mapped = KEY_END;
         return true;
     case XK_Escape:
         *mapped = KEY_ESCAPE;
@@ -144,6 +166,47 @@ static bool mapped_key(KeySym symbol, SceneKey *mapped) {
     default:
         return false;
     }
+}
+
+static void copy_text(NativeWindow *window, Time when, const char *utf8) {
+    size_t length = strlen(utf8);
+
+    if (length >= sizeof(window->clipboard_text)) {
+        length = sizeof(window->clipboard_text) - 1;
+    }
+
+    memcpy(window->clipboard_text, utf8, length);
+    window->clipboard_text[length] = 0;
+    window->clipboard_size = length;
+    XSetSelectionOwner(window->display, window->clipboard, window->handle, when);
+    XFlush(window->display);
+}
+
+static void respond_selection(NativeWindow *window, XSelectionRequestEvent *request) {
+    XEvent reply = {0};
+    reply.xselection.type = SelectionNotify;
+    reply.xselection.requestor = request->requestor;
+    reply.xselection.selection = request->selection;
+    reply.xselection.target = request->target;
+    reply.xselection.time = request->time;
+    reply.xselection.property = None;
+
+    if (request->selection == window->clipboard && window->clipboard_size > 0 && request->property != None) {
+        if (request->target == window->targets) {
+            Atom supported[] = {window->targets, window->utf8, XA_STRING};
+            XChangeProperty(window->display, request->requestor, request->property, XA_ATOM, 32,
+                            PropModeReplace, (unsigned char *)supported, 3);
+            reply.xselection.property = request->property;
+        } else if (request->target == window->utf8 || request->target == XA_STRING) {
+            XChangeProperty(window->display, request->requestor, request->property, request->target, 8,
+                            PropModeReplace, (const unsigned char *)window->clipboard_text,
+                            (int)window->clipboard_size);
+            reply.xselection.property = request->property;
+        }
+    }
+
+    XSendEvent(window->display, request->requestor, False, 0, &reply);
+    XFlush(window->display);
 }
 
 static void key(NativeWindow *window, XKeyEvent *event) {
@@ -159,13 +222,31 @@ static void key(NativeWindow *window, XKeyEvent *event) {
     }
 
     bool ctrl = (event->state & ControlMask) != 0;
+    bool shift = (event->state & ShiftMask) != 0;
 
     if (ctrl && ((symbol >= XK_a && symbol <= XK_z) || (symbol >= XK_A && symbol <= XK_Z))) {
         UiShortcutResult shortcut = ui_controller_shortcut(&window->controller, (char)symbol, true);
 
         if (shortcut == UI_SHORTCUT_PASTE_SEARCH) {
+            if (XGetSelectionOwner(window->display, window->clipboard) == window->handle &&
+                window->clipboard_size > 0) {
+                ui_controller_text(&window->controller, window->clipboard_text, window->clipboard_size);
+                return;
+            }
+
             XConvertSelection(window->display, window->clipboard, window->utf8, window->paste, window->handle,
                               event->time);
+            return;
+        }
+
+        if (shortcut == UI_SHORTCUT_COPY_SEARCH || shortcut == UI_SHORTCUT_CUT_SEARCH) {
+            char selected[SEARCH_CAPACITY];
+
+            if (ui_controller_copy(&window->controller, selected, sizeof(selected),
+                                   shortcut == UI_SHORTCUT_CUT_SEARCH)) {
+                copy_text(window, event->time, selected);
+            }
+
             return;
         }
 
@@ -174,20 +255,20 @@ static void key(NativeWindow *window, XKeyEvent *event) {
         }
     }
 
+    SceneKey mapped;
+
+    if (mapped_key(symbol, &mapped) &&
+        (symbol != XK_space || !ui_controller_is_editing(&window->controller))) {
+        ui_controller_key_mods(&window->controller, mapped, shift, ctrl, milliseconds());
+        return;
+    }
+
     if (ctrl && ui_controller_is_editing(&window->controller)) {
         return;
     }
 
-    if (!ctrl && size > 0 && symbol != XK_Return && symbol != XK_Tab && symbol != XK_BackSpace &&
-        symbol != XK_Escape && ui_controller_is_editing(&window->controller)) {
+    if (!ctrl && size > 0 && ui_controller_is_editing(&window->controller)) {
         ui_controller_text(&window->controller, text, (size_t)size);
-        return;
-    }
-
-    SceneKey mapped;
-
-    if (mapped_key(symbol, &mapped)) {
-        ui_controller_key(&window->controller, mapped, (event->state & ShiftMask) != 0, milliseconds());
     }
 }
 
@@ -240,7 +321,15 @@ static void paste(NativeWindow *window, XSelectionEvent *event) {
     if (XGetWindowProperty(window->display, window->handle, window->paste, 0, SEARCH_CAPACITY, True,
                            window->utf8, &type, &format, &count, &remaining, &data) == Success) {
         if (type == window->utf8 && format == 8 && !remaining && data) {
-            ui_controller_text(&window->controller, (const char *)data, count);
+            size_t len = count;
+
+            while (len > 0 && (data[len - 1] == '\n' || data[len - 1] == '\r')) {
+                --len;
+            }
+
+            if (len > 0) {
+                ui_controller_text(&window->controller, (const char *)data, len);
+            }
         }
 
         if (data) {
@@ -256,63 +345,116 @@ int ui_run(bool smoke_test) {
     XSetLocaleModifiers("");
     linux_load_font();
 
-    NativeWindow window = {.width = 1280, .height = 800, .visible = true};
-    ui_controller_init(&window.controller, milliseconds());
-    window.display = XOpenDisplay(NULL);
+    NativeWindow *window = calloc(1, sizeof(*window));
 
-    if (!window.display) {
+    if (!window) {
+        return 1;
+    }
+
+    window->width = 1280;
+    window->height = 800;
+    window->visible = true;
+    ui_controller_init(&window->controller, milliseconds());
+    window->display = XOpenDisplay(NULL);
+
+    if (!window->display) {
         fprintf(stderr, "No X11/XWayland display.\n");
+        ui_controller_destroy(&window->controller);
+        free(window);
         return 1;
     }
 
     if (pipe(notifications)) {
-        XCloseDisplay(window.display);
+        XCloseDisplay(window->display);
+        ui_controller_destroy(&window->controller);
+        free(window);
         return 1;
     }
 
     fcntl(notifications[0], F_SETFL, O_NONBLOCK);
     fcntl(notifications[1], F_SETFL, O_NONBLOCK);
 
-    int screen = DefaultScreen(window.display);
-    window.handle = XCreateSimpleWindow(window.display, RootWindow(window.display, screen), 0, 0,
-                                        (unsigned)window.width, (unsigned)window.height, 0, 0, 0);
+    int screen = DefaultScreen(window->display);
+    window->handle = XCreateSimpleWindow(window->display, RootWindow(window->display, screen), 0, 0,
+                                         (unsigned)window->width, (unsigned)window->height, 0, 0, 0);
 
-    window.close = XInternAtom(window.display, "WM_DELETE_WINDOW", False);
-    XSetWMProtocols(window.display, window.handle, &window.close, 1);
-    XStoreName(window.display, window.handle, "Native Spotify");
+    window->close = XInternAtom(window->display, "WM_DELETE_WINDOW", False);
+    XSetWMProtocols(window->display, window->handle, &window->close, 1);
+    XStoreName(window->display, window->handle, "Native Spotify");
+    XClassHint class_hint = {.res_name = "native_spotify", .res_class = "Native Spotify"};
+    XSetClassHint(window->display, window->handle, &class_hint);
     XSizeHints hints = {.flags = PMinSize, .min_width = 960, .min_height = 640};
-    XSetWMNormalHints(window.display, window.handle, &hints);
+    XSetWMNormalHints(window->display, window->handle, &hints);
 
-    XIM method = XOpenIM(window.display, NULL, NULL, NULL);
+    static const unsigned icon_sizes[] = {16, 32, 48, 128};
+    size_t icon_words = 0;
+
+    for (unsigned i = 0; i < sizeof(icon_sizes) / sizeof(icon_sizes[0]); ++i) {
+        icon_words += 2 + (size_t)icon_sizes[i] * icon_sizes[i];
+    }
+
+    unsigned long *icon_prop = malloc(icon_words * sizeof(*icon_prop));
+
+    if (icon_prop) {
+        size_t pos = 0;
+
+        for (unsigned i = 0; i < sizeof(icon_sizes) / sizeof(icon_sizes[0]); ++i) {
+            unsigned side = icon_sizes[i];
+            icon_prop[pos++] = side;
+            icon_prop[pos++] = side;
+            uint32_t *pixels = malloc((size_t)side * side * sizeof(*pixels));
+
+            if (pixels) {
+                canvas_brand_icon_pixels(side, pixels);
+
+                for (size_t p = 0; p < (size_t)side * side; ++p) {
+                    icon_prop[pos++] = (unsigned long)pixels[p];
+                }
+
+                free(pixels);
+            } else {
+                pos += (size_t)side * side;
+            }
+        }
+
+        Atom net_wm_icon = XInternAtom(window->display, "_NET_WM_ICON", False);
+        XChangeProperty(window->display, window->handle, net_wm_icon, XA_CARDINAL, 32, PropModeReplace,
+                        (unsigned char *)icon_prop, (int)pos);
+        free(icon_prop);
+    }
+
+    XIM method = XOpenIM(window->display, NULL, NULL, NULL);
 
     if (method) {
-        window.input = XCreateIC(method, XNInputStyle, XIMPreeditNothing | XIMStatusNothing, XNClientWindow,
-                                 window.handle, XNFocusWindow, window.handle, NULL);
+        window->input = XCreateIC(method, XNInputStyle, XIMPreeditNothing | XIMStatusNothing, XNClientWindow,
+                                  window->handle, XNFocusWindow, window->handle, NULL);
     }
 
     long filter = 0;
 
-    if (window.input) {
-        XGetICValues(window.input, XNFilterEvents, &filter, NULL);
+    if (window->input) {
+        XGetICValues(window->input, XNFilterEvents, &filter, NULL);
     }
 
-    XSelectInput(window.display, window.handle,
+    XSelectInput(window->display, window->handle,
                  ExposureMask | StructureNotifyMask | ButtonPressMask | ButtonReleaseMask |
                      PointerMotionMask | KeyPressMask | FocusChangeMask | LeaveWindowMask | filter);
 
-    window.clipboard = XInternAtom(window.display, "CLIPBOARD", False);
-    window.utf8 = XInternAtom(window.display, "UTF8_STRING", False);
-    window.paste = XInternAtom(window.display, "NATIVE_PASTE", False);
-    window.key_paste = XInternAtom(window.display, "NATIVE_KEY_PASTE", False);
-    active_window = &window;
-    window.hand = XCreateFontCursor(window.display, XC_hand2);
-    window.caret = XCreateFontCursor(window.display, XC_xterm);
-    window.surface = cairo_xlib_surface_create(
-        window.display, window.handle, DefaultVisual(window.display, screen), window.width, window.height);
+    window->clipboard = XInternAtom(window->display, "CLIPBOARD", False);
+    window->utf8 = XInternAtom(window->display, "UTF8_STRING", False);
+    window->targets = XInternAtom(window->display, "TARGETS", False);
+    window->paste = XInternAtom(window->display, "NATIVE_PASTE", False);
+    window->key_paste = XInternAtom(window->display, "NATIVE_KEY_PASTE", False);
+    active_window = window;
+    window->hand = XCreateFontCursor(window->display, XC_hand2);
+    window->caret = XCreateFontCursor(window->display, XC_xterm);
+    window->surface =
+        cairo_xlib_surface_create(window->display, window->handle, DefaultVisual(window->display, screen),
+                                  window->width, window->height);
 
-    XMapWindow(window.display, window.handle);
-    draw(&window);
-    XSync(window.display, False);
+    XMapWindow(window->display, window->handle);
+    draw(window);
+    XSync(window->display, False);
     puts("first paint complete");
     fflush(stdout);
 
@@ -325,9 +467,9 @@ int ui_run(bool smoke_test) {
     while (running) {
         bool dirty = false;
 
-        while (XPending(window.display)) {
+        while (XPending(window->display)) {
             XEvent event;
-            XNextEvent(window.display, &event);
+            XNextEvent(window->display, &event);
 
             if (XFilterEvent(&event, None)) {
                 continue;
@@ -335,114 +477,139 @@ int ui_run(bool smoke_test) {
 
             switch (event.type) {
             case MapNotify:
-                window.visible = true;
+                window->visible = true;
                 break;
             case UnmapNotify:
-                window.visible = false;
+                window->visible = false;
                 break;
             case Expose:
                 dirty = true;
                 break;
             case ConfigureNotify:
-                window.width = event.xconfigure.width;
-                window.height = event.xconfigure.height;
-                cairo_xlib_surface_set_size(window.surface, window.width, window.height);
+                window->width = event.xconfigure.width;
+                window->height = event.xconfigure.height;
+                cairo_xlib_surface_set_size(window->surface, window->width, window->height);
                 dirty = true;
                 break;
             case ClientMessage:
-                if ((Atom)event.xclient.data.l[0] == window.close) {
+                if ((Atom)event.xclient.data.l[0] == window->close) {
                     running = false;
                 }
                 break;
             case FocusIn:
-                window.focused = true;
-                input_focus(&window);
+                window->focused = true;
+                input_focus(window);
                 break;
             case FocusOut:
-                window.focused = false;
-                input_focus(&window);
+                window->focused = false;
+                input_focus(window);
                 break;
             case LeaveNotify:
-                ui_controller_leave(&window.controller, milliseconds());
+                ui_controller_leave(&window->controller, milliseconds());
                 dirty = true;
                 break;
-            case ButtonPress:
+            case ButtonPress: {
+                float scale = scene_view_scale(window->width, window->height, 1.0f);
+                float x = event.xbutton.x / scale;
+                float y = event.xbutton.y / scale;
+
                 if (event.xbutton.button == 4 || event.xbutton.button == 5) {
-                    ui_controller_scroll(&window.controller, (float)event.xbutton.x, (float)event.xbutton.y,
-                                         event.xbutton.button == 4 ? -1 : 1, milliseconds());
+                    ui_controller_scroll(&window->controller, x, y, event.xbutton.button == 4 ? -1 : 1,
+                                         milliseconds());
                 }
 
                 if (event.xbutton.button == 3) {
-                    ui_controller_context_press(&window.controller, (float)event.xbutton.x,
-                                                (float)event.xbutton.y);
+                    ui_controller_context_press(&window->controller, x, y);
                 }
 
                 if (event.xbutton.button == 1 &&
-                    ui_controller_press(&window.controller, (float)event.xbutton.x, (float)event.xbutton.y,
-                                        milliseconds())) {
-                    XGrabPointer(window.display, window.handle, False, PointerMotionMask | ButtonReleaseMask,
-                                 GrabModeAsync, GrabModeAsync, None, None, event.xbutton.time);
+                    ui_controller_press(&window->controller, x, y, milliseconds())) {
+                    XGrabPointer(window->display, window->handle, False,
+                                 PointerMotionMask | ButtonReleaseMask, GrabModeAsync, GrabModeAsync, None,
+                                 None, event.xbutton.time);
                 }
 
-                input_focus(&window);
+                input_focus(window);
                 dirty = true;
                 break;
+            }
             case ButtonRelease:
                 if (event.xbutton.button == 1) {
-                    ui_controller_release(&window.controller, (float)event.xbutton.x, (float)event.xbutton.y,
-                                          milliseconds());
-                    XUngrabPointer(window.display, event.xbutton.time);
+                    float scale = scene_view_scale(window->width, window->height, 1.0f);
+                    ui_controller_release(&window->controller, event.xbutton.x / scale,
+                                          event.xbutton.y / scale, milliseconds());
+                    XUngrabPointer(window->display, event.xbutton.time);
                     dirty = true;
                 }
                 break;
             case MotionNotify: {
                 bool cursor_changed = false;
-                bool changed = ui_controller_motion(&window.controller, (float)event.xmotion.x,
-                                                    (float)event.xmotion.y, milliseconds(), &cursor_changed);
+                float scale = scene_view_scale(window->width, window->height, 1.0f);
+                bool changed = ui_controller_motion(&window->controller, event.xmotion.x / scale,
+                                                    event.xmotion.y / scale, milliseconds(), &cursor_changed);
 
                 if (cursor_changed) {
-                    apply_cursor(&window);
+                    apply_cursor(window);
                 }
 
                 dirty = dirty || changed;
                 break;
             }
             case KeyPress:
-                key(&window, &event.xkey);
-                input_focus(&window);
+                key(window, &event.xkey);
+                input_focus(window);
                 dirty = true;
                 break;
             case SelectionNotify:
-                paste(&window, &event.xselection);
+                paste(window, &event.xselection);
                 dirty = true;
+                break;
+            case SelectionRequest:
+                respond_selection(window, &event.xselectionrequest);
                 break;
             }
         }
 
-        int sync_timeout = app_tick(window.visible);
+        if (window->lyrics_fullscreen != window->controller.scene.lyrics_fullscreen) {
+            window->lyrics_fullscreen = window->controller.scene.lyrics_fullscreen;
+            XEvent request = {0};
+            request.xclient.type = ClientMessage;
+            request.xclient.window = window->handle;
+            request.xclient.message_type = XInternAtom(window->display, "_NET_WM_STATE", False);
+            request.xclient.format = 32;
+            request.xclient.data.l[0] = window->lyrics_fullscreen ? 1 : 0;
+            request.xclient.data.l[1] = (long)XInternAtom(window->display, "_NET_WM_STATE_FULLSCREEN", False);
+            request.xclient.data.l[3] = 1;
+            XSendEvent(window->display, DefaultRootWindow(window->display), False,
+                       SubstructureRedirectMask | SubstructureNotifyMask, &request);
+            XFlush(window->display);
+            dirty = true;
+        }
+
+        int sync_timeout = app_tick(window->visible);
         char drain[64];
 
         if (read(notifications[0], drain, sizeof(drain)) > 0) {
             dirty = true;
         }
 
-        if (window.controller.scene.animating) {
-            ui_controller_tick(&window.controller, milliseconds());
+        if (window->controller.scene.animating) {
+            ui_controller_tick(&window->controller, milliseconds());
             dirty = true;
         }
 
         if (dirty) {
-            draw(&window);
+            draw(window);
         }
 
         if (!running) {
             break;
         }
 
-        struct pollfd descriptors[] = {{ConnectionNumber(window.display), POLLIN, 0},
+        struct pollfd descriptors[] = {{ConnectionNumber(window->display), POLLIN, 0},
                                        {notifications[0], POLLIN, 0}};
 
-        if (poll(descriptors, 2, window.controller.scene.animating ? 16 : sync_timeout) < 0 &&
+        if (poll(descriptors, 2, window->controller.scene.animating ? 16 : sync_timeout) < 0 &&
             errno != EINTR) {
             break;
         }
@@ -450,11 +617,13 @@ int ui_run(bool smoke_test) {
 
     if (!smoke_test) {
         app_shutdown();
+        ui_controller_destroy(&window->controller);
+        free(window);
         exit(0);
     }
 
-    if (window.input) {
-        XDestroyIC(window.input);
+    if (window->input) {
+        XDestroyIC(window->input);
     }
 
     if (method) {
@@ -462,13 +631,15 @@ int ui_run(bool smoke_test) {
     }
 
     active_window = NULL;
-    linux_canvas_destroy(&window.backend);
-    cairo_surface_destroy(window.surface);
-    cairo_surface_destroy(window.buffer);
-    XDestroyWindow(window.display, window.handle);
-    XCloseDisplay(window.display);
+    linux_canvas_destroy(&window->backend);
+    cairo_surface_destroy(window->surface);
+    cairo_surface_destroy(window->buffer);
+    XDestroyWindow(window->display, window->handle);
+    XCloseDisplay(window->display);
     close(notifications[0]);
     close(notifications[1]);
+    ui_controller_destroy(&window->controller);
+    free(window);
 
     return 0;
 }

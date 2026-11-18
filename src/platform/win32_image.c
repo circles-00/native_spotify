@@ -18,8 +18,9 @@ bool platform_image_decode(const void *data, size_t size, Image *image) {
     const unsigned char *bytes = data;
     bool jpeg = bytes[0] == 0xff && bytes[1] == 0xd8;
     bool png = !memcmp(data, "\x89PNG\r\n\x1a\n", 8);
+    bool webp = size >= 12 && !memcmp(data, "RIFF", 4) && !memcmp(bytes + 8, "WEBP", 4);
 
-    if (!jpeg && !png) {
+    if (!jpeg && !png && !webp) {
         return false;
     }
 

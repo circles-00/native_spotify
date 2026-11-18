@@ -31,6 +31,7 @@ typedef struct {
     bool shuffle;
     RepeatMode repeat;
     char uri[128];
+    char context_uri[128];
     char title[512];
     char artist[512];
     char artist_id[23];

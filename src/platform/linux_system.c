@@ -7,6 +7,9 @@
 #include <openssl/rand.h>
 #include <pthread.h>
 #include <errno.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -18,7 +21,19 @@ static const SecretSchema schema = {.name = "org.nativecontroller.Spotify",
                                     .attributes = {{"client-id", SECRET_SCHEMA_ATTRIBUTE_STRING}, {NULL, 0}}};
 
 bool platform_init(void) {
+#ifdef __GLIBC__
+    // Keep per-thread arenas and mmap thresholds bounded so multi-MB HTTP/JSON buffers return to the OS.
+    mallopt(M_ARENA_MAX, 2);
+    mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+#endif
+
     return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
+}
+
+void platform_trim_memory(void) {
+#ifdef __GLIBC__
+    malloc_trim(0);
+#endif
 }
 
 bool platform_random(unsigned char *out, size_t size) {
@@ -123,8 +138,12 @@ bool platform_http(const char *method, const char *url, const char *token, const
         headers = curl_slist_append(headers, authorization);
     }
 
-    headers = curl_slist_append(headers, form ? "Content-Type: application/x-www-form-urlencoded"
-                                              : "Content-Type: application/json");
+    if (form || body) {
+        headers = curl_slist_append(headers, form ? "Content-Type: application/x-www-form-urlencoded"
+                                                  : "Content-Type: application/json");
+    } else if (!token) {
+        headers = curl_slist_append(headers, "Accept: image/png, image/jpeg, image/webp;q=0.9, */*;q=0.8");
+    }
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);

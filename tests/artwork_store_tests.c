@@ -79,6 +79,91 @@ int main(void) {
     CHECK(!artwork_store_request(&store, "https://invalid.test/image/cover", 0));
     artwork_store_clear(&store);
     CHECK(artwork_store_next(&store) == ARTWORK_CACHE_LIMIT);
-    printf("PASS: %u artwork store checks (visible pins, scroll churn, priority and retries)\n", checks);
+    CHECK(artwork_store_bytes(&store) == 0);
+
+    /* Byte-budget eviction removes stale unpinned artwork while keeping active frame entries. */
+    const unsigned tile_side = ARTWORK_SIDE_LIMIT;
+    const size_t tile_bytes = (size_t)tile_side * tile_side * sizeof(uint32_t);
+    store.frame = 1;
+
+    for (unsigned i = 0; i < 26; ++i) {
+        if (i == 10) {
+            store.frame = 2;
+        }
+
+        char url[128];
+        snprintf(url, sizeof(url), "https://i.scdn.co/image/budget%u", i);
+        ArtworkEntry *item = artwork_store_request(&store, url, 0);
+        CHECK(item != NULL);
+        CHECK(artwork_store_evict_budget(&store, tile_bytes));
+        item->state = ART_READY;
+        item->image = (Image){tile_side, tile_side, malloc(tile_bytes)};
+        CHECK(item->image.pixels != NULL);
+        CHECK(artwork_store_bytes(&store) <= ARTWORK_BYTES_LIMIT);
+    }
+
+    CHECK(artwork_store_evict_budget(&store, tile_bytes));
+    CHECK(artwork_store_bytes(&store) + tile_bytes <= ARTWORK_BYTES_LIMIT);
+    artwork_store_clear(&store);
+    CHECK(artwork_store_bytes(&store) == 0);
+
+    /* Stale off-screen artwork is pruned down to the idle budget while recent pins remain ready. */
+    store.frame = 1;
+
+    for (unsigned i = 0; i < 18; ++i) {
+        if (i == 14) {
+            store.frame = 5;
+        }
+
+        char url[128];
+        snprintf(url, sizeof(url), "https://i.scdn.co/image/prune%u", i);
+        ArtworkEntry *item = artwork_store_request(&store, url, 0);
+        CHECK(item != NULL);
+        item->state = ART_READY;
+        item->image = (Image){tile_side, tile_side, malloc(tile_bytes)};
+        CHECK(item->image.pixels != NULL);
+    }
+
+    CHECK(artwork_store_bytes(&store) > ARTWORK_IDLE_BYTES_LIMIT);
+    CHECK(artwork_store_prune_stale(&store, 1, ARTWORK_IDLE_BYTES_LIMIT));
+    CHECK(artwork_store_bytes(&store) <= ARTWORK_IDLE_BYTES_LIMIT);
+
+    for (unsigned i = 14; i < 18; ++i) {
+        char url[128];
+        snprintf(url, sizeof(url), "https://i.scdn.co/image/prune%u", i);
+        ArtworkEntry *item = artwork_store_request(&store, url, 0);
+        CHECK(item && item->state == ART_READY && item->image.pixels != NULL);
+    }
+
+    artwork_store_clear(&store);
+    CHECK(artwork_store_bytes(&store) == 0);
+
+    /* When active-frame pinned covers already fill the hard budget, new pixel storage is rejected. */
+    store.frame = 3;
+
+    for (unsigned i = 0; i < ARTWORK_CACHE_LIMIT; ++i) {
+        char url[128];
+        snprintf(url, sizeof(url), "https://i.scdn.co/image/hard%u", i);
+        ArtworkEntry *item = artwork_store_request(&store, url, 0);
+
+        if (!item) {
+            break;
+        }
+
+        if (!artwork_store_evict_budget(&store, tile_bytes)) {
+            break;
+        }
+
+        item->state = ART_READY;
+        item->image = (Image){tile_side, tile_side, malloc(tile_bytes)};
+        CHECK(item->image.pixels != NULL);
+    }
+
+    CHECK(artwork_store_bytes(&store) <= ARTWORK_HARD_BYTES_LIMIT);
+    CHECK(!artwork_store_evict_budget(&store, ARTWORK_HARD_BYTES_LIMIT));
+    artwork_store_clear(&store);
+    CHECK(artwork_store_bytes(&store) == 0);
+    printf("PASS: %u artwork store checks (visible pins, scroll churn, priority, byte budgets and retries)\n",
+           checks);
     return 0;
 }

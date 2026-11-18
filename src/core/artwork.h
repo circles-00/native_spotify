@@ -7,9 +7,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ARTWORK_URL_CAPACITY 512
-#define ARTWORK_SIDE_LIMIT 320
+#define ARTWORK_URL_CAPACITY 256
+#define ARTWORK_SIDE_LIMIT 160
 #define ARTWORK_SOURCE_LIMIT 2048
+#define ARTWORK_HTTP_LIMIT (1024 * 1024)
 
 typedef struct {
     unsigned width;

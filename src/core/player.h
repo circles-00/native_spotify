@@ -10,6 +10,7 @@
 typedef struct {
     char id[DEVICE_ID_CAPACITY];
     char name[256];
+    char type[32];
     bool active;
     bool restricted;
     bool supports_volume;
@@ -28,6 +29,9 @@ typedef struct {
     CatalogItem items[QUEUE_LIMIT];
     unsigned count;
     unsigned received;
+    unsigned queued;
+    unsigned first;
+    unsigned total;
     bool has_current;
     bool truncated;
 } Queue;
@@ -46,6 +50,7 @@ bool device_can_transfer(const Device *device);
 bool device_transfer_body(const Device *device, bool playing, char *out, size_t capacity);
 
 bool queue_parse(const char *json, Queue *queue);
+const CatalogItem *queue_row(const Queue *queue, unsigned index);
 bool queue_page(const Queue *queue, unsigned offset, BrowsePage *page);
 
 bool playback_can_seek(const Playback *playback);

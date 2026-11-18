@@ -37,11 +37,24 @@ static void load_artwork(void *argument) {
 
         if (generation == revision && store.entries[slot].state == ART_LOADING &&
             !strcmp(store.entries[slot].url, url)) {
-            store.entries[slot].image = image;
-            store.entries[slot].state = ok ? ART_READY : ART_FAILED;
+            if (ok && image.pixels) {
+                free(store.entries[slot].image.pixels);
+                store.entries[slot].image = (Image){0};
+                size_t incoming = (size_t)image.width * image.height * sizeof(uint32_t);
+
+                if (artwork_store_evict_budget(&store, incoming)) {
+                    store.entries[slot].image = image;
+                    store.entries[slot].state = ART_READY;
+                    image.pixels = NULL;
+                } else {
+                    store.entries[slot].state = ART_FAILED;
+                }
+            } else {
+                store.entries[slot].state = ART_FAILED;
+            }
+
             uint64_t retry = retry_after > 30 ? (uint64_t)retry_after * 1000 : 30000;
             store.entries[slot].retry_ms = platform_milliseconds() + retry;
-            image.pixels = NULL;
         }
 
         platform_unlock();
@@ -75,6 +88,19 @@ void artwork_pin(const char *url) {
     platform_lock();
     artwork_store_pin(&store, url);
     platform_unlock();
+}
+
+void artwork_prune(bool aggressive) {
+    uint64_t keep = aggressive ? 1 : 8;
+    size_t target = aggressive ? ARTWORK_IDLE_BYTES_LIMIT / 2 : ARTWORK_IDLE_BYTES_LIMIT;
+
+    platform_lock();
+    bool pruned = artwork_store_prune_stale(&store, keep, target);
+    platform_unlock();
+
+    if (pruned) {
+        platform_trim_memory();
+    }
 }
 
 bool artwork_visit(const char *url, void (*paint)(void *, const Image *), void *context) {

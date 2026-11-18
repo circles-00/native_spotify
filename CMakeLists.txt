@@ -13,7 +13,7 @@ endif()
 
 add_library(yyjson STATIC vendor/yyjson/yyjson.c)
 target_include_directories(yyjson PUBLIC vendor/yyjson)
-target_compile_definitions(yyjson PRIVATE YYJSON_DISABLE_WRITER=1 YYJSON_DISABLE_UTILS=1)
+target_compile_definitions(yyjson PRIVATE YYJSON_DISABLE_UTILS=1)
 
 add_library(core STATIC
   src/core/core.c
@@ -22,11 +22,13 @@ add_library(core STATIC
   src/core/browse.c
   src/core/browse_cache.c
   src/core/player.c
+  src/core/lyrics.c
   src/core/api.c
   src/core/artwork.c
   src/core/engine.c
   src/core/app.c
   src/core/app_content.c
+  src/core/app_queue.c
   src/core/app_workers.c
   src/platform/loopback.c
 )
@@ -43,7 +45,9 @@ add_library(presentation STATIC
   src/ui/search_scene.c
   src/ui/home_scene.c
   src/ui/panel_scene.c
+  src/ui/lyrics_scene.c
   src/ui/collection_scene.c
+  src/ui/settings_scene.c
   src/ui/scroll.c
   src/ui/icons.c
   src/ui/canvas_raster.c
@@ -58,6 +62,25 @@ if(WIN32)
   target_compile_definitions(core PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0a00)
   target_link_libraries(core PUBLIC winhttp bcrypt advapi32 shell32 ws2_32 ole32 windowscodecs uuid)
   set(NATIVE_UI src/platform/win32_window.c src/platform/win32_canvas.c)
+  set(NATIVE_RC "${CMAKE_CURRENT_BINARY_DIR}/native_spotify.rc")
+  file(WRITE "${NATIVE_RC}" "1 ICON \"${CMAKE_CURRENT_SOURCE_DIR}/assets/native_spotify.ico\"\n")
+
+  if(ZIG_EXECUTABLE)
+    find_program(LLVM_WINDRES NAMES llvm-windres x86_64-w64-mingw32-windres windres)
+    if(LLVM_WINDRES)
+      set(NATIVE_RES "${CMAKE_CURRENT_BINARY_DIR}/native_spotify_res.o")
+      add_custom_command(
+        OUTPUT "${NATIVE_RES}"
+        COMMAND "${LLVM_WINDRES}" --target=pe-x86-64 "${NATIVE_RC}" -O coff -o "${NATIVE_RES}"
+        DEPENDS "${NATIVE_RC}" "${CMAKE_CURRENT_SOURCE_DIR}/assets/native_spotify.ico"
+        VERBATIM
+      )
+      list(APPEND NATIVE_UI "${NATIVE_RES}")
+    endif()
+  else()
+    list(APPEND NATIVE_UI "${NATIVE_RC}")
+  endif()
+
   add_executable(native_spotify WIN32 src/main.c ${NATIVE_UI})
   target_link_libraries(native_spotify PRIVATE presentation gdi32 user32 msimg32 dwmapi)
 
@@ -69,6 +92,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
   pkg_check_modules(PLATFORM REQUIRED IMPORTED_TARGET libcurl openssl libsecret-1)
   pkg_check_modules(UI REQUIRED IMPORTED_TARGET x11 cairo pangocairo fontconfig)
+  pkg_check_modules(WEBP QUIET IMPORTED_TARGET libwebp)
   find_package(JPEG REQUIRED)
   find_package(PNG REQUIRED)
 
@@ -76,6 +100,12 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
   target_sources(core PRIVATE src/platform/linux_system.c src/platform/linux_image.c src/platform/linux_engine.c)
   target_link_libraries(core PUBLIC PkgConfig::PLATFORM Threads::Threads JPEG::JPEG PNG::PNG)
+  target_link_libraries(presentation PUBLIC m)
+
+  if(WEBP_FOUND)
+    target_compile_definitions(core PRIVATE HAVE_LIBWEBP=1)
+    target_link_libraries(core PUBLIC PkgConfig::WEBP)
+  endif()
 
   set(NATIVE_UI src/platform/linux_window.c src/platform/linux_canvas.c)
   add_executable(native_spotify src/main.c ${NATIVE_UI})

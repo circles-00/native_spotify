@@ -42,6 +42,31 @@ bool catalog_item_parse(yyjson_val *value, ItemKind kind, CatalogItem *item) {
         snprintf(item->artist_id, sizeof(item->artist_id), "%s", artist_id);
     }
 
+    if (kind == ITEM_TRACK || kind == ITEM_ALBUM) {
+        yyjson_val *artists = yyjson_obj_get(value, "artists");
+        size_t pos = 0;
+        size_t max_guest_ids = sizeof(item->guest_artist_ids) / sizeof(item->guest_artist_ids[0]);
+
+        for (size_t i = 1; i <= 15 && i < yyjson_arr_size(artists); ++i) {
+            yyjson_val *entry = yyjson_arr_get(artists, i);
+            const char *guest = yyjson_get_str(yyjson_obj_get(entry, "id"));
+            const char *guest_name = yyjson_get_str(yyjson_obj_get(entry, "name"));
+
+            if (kind == ITEM_TRACK && i - 1 < max_guest_ids && spotify_id_valid(guest)) {
+                copy_utf8(item->guest_artist_ids[i - 1], sizeof(item->guest_artist_ids[0]), guest);
+            }
+
+            if (guest_name && guest_name[0] && pos + 2 < sizeof(item->guest_artists)) {
+                if (pos) {
+                    item->guest_artists[pos++] = ' ';
+                }
+
+                copy_utf8(item->guest_artists + pos, sizeof(item->guest_artists) - pos, guest_name);
+                pos += strlen(item->guest_artists + pos);
+            }
+        }
+    }
+
     yyjson_val *album_obj = yyjson_obj_get(value, "album");
     const char *album_id = yyjson_get_str(yyjson_obj_get(album_obj, "id"));
     const char *album_title = yyjson_get_str(yyjson_obj_get(album_obj, "name"));
@@ -80,7 +105,31 @@ bool catalog_item_parse(yyjson_val *value, ItemKind kind, CatalogItem *item) {
         item->duration_known = true;
     }
 
+    yyjson_val *popularity = yyjson_obj_get(value, "popularity");
+
+    if (yyjson_is_uint(popularity) && yyjson_get_uint(popularity) <= 100) {
+        item->popularity = (unsigned char)yyjson_get_uint(popularity);
+    }
+
     return true;
+}
+
+bool catalog_track_has_artist(const CatalogItem *item, const char *id) {
+    if (item->kind != ITEM_TRACK || !spotify_id_valid(id)) {
+        return false;
+    }
+
+    if (!strcmp(item->artist_id, id)) {
+        return true;
+    }
+
+    for (unsigned i = 0; i < sizeof(item->guest_artist_ids) / sizeof(item->guest_artist_ids[0]); ++i) {
+        if (!strcmp(item->guest_artist_ids[i], id)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool recent_albums_parse(const char *json, BrowsePage *page) {

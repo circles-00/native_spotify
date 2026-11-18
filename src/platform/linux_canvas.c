@@ -14,39 +14,66 @@ static void color(cairo_t *paint, Color value) {
 }
 
 static void rounded(cairo_t *paint, Rect rect, float radius) {
-    if (radius > rect.h / 2) {
-        radius = rect.h / 2;
-    }
-    if (radius > rect.w / 2) {
-        radius = rect.w / 2;
+    if (rect.w <= 0.0f || rect.h <= 0.0f) {
+        cairo_new_sub_path(paint);
+        cairo_rectangle(paint, rect.x, rect.y, 0.0, 0.0);
+        return;
     }
 
+    radius = canvas_corner_radius(rect, radius);
+
+    if (radius == 0.0f) {
+        cairo_new_sub_path(paint);
+        cairo_rectangle(paint, rect.x, rect.y, rect.w, rect.h);
+        return;
+    }
+
+    static const double half_pi = 1.5707963267948966;
+    static const double pi = 3.1415926535897932;
+    static const double three_half_pi = 4.7123889803846899;
+
     cairo_new_sub_path(paint);
-    cairo_arc(paint, rect.x + rect.w - radius, rect.y + radius, radius, -1.570796327, 0);
-    cairo_arc(paint, rect.x + rect.w - radius, rect.y + rect.h - radius, radius, 0, 1.570796327);
-    cairo_arc(paint, rect.x + radius, rect.y + rect.h - radius, radius, 1.570796327, 3.141592654);
-    cairo_arc(paint, rect.x + radius, rect.y + radius, radius, 3.141592654, 4.712388980);
+    cairo_arc(paint, rect.x + rect.w - radius, rect.y + radius, radius, -half_pi, 0.0);
+    cairo_arc(paint, rect.x + rect.w - radius, rect.y + rect.h - radius, radius, 0.0, half_pi);
+    cairo_arc(paint, rect.x + radius, rect.y + rect.h - radius, radius, half_pi, pi);
+    cairo_arc(paint, rect.x + radius, rect.y + radius, radius, pi, three_half_pi);
     cairo_close_path(paint);
 }
 
 static void box(void *context, Rect rect, float radius, Color value) {
-    if (rect.w <= 0 || rect.h <= 0) {
+    if (rect.w <= 0.0f || rect.h <= 0.0f) {
         return;
     }
 
     LinuxCanvas *backend = context;
     rounded(backend->paint, rect, radius);
-    color(backend->paint, value);
+
+    if (value >> 24) {
+        cairo_set_source_rgba(backend->paint, ((value >> 16) & 255) / 255.0, ((value >> 8) & 255) / 255.0,
+                              (value & 255) / 255.0, (value >> 24) / 255.0);
+    } else {
+        color(backend->paint, value);
+    }
+
     cairo_fill(backend->paint);
 }
 
 static void gradient(void *context, Rect rect, float radius, Color top, Color bottom) {
+    if (rect.w <= 0.0f || rect.h <= 0.0f) {
+        return;
+    }
+
     LinuxCanvas *backend = context;
     cairo_pattern_t *pattern = cairo_pattern_create_linear(rect.x, rect.y, rect.x, rect.y + rect.h);
 
-    cairo_pattern_add_color_stop_rgb(pattern, 0, ((top >> 16) & 255) / 255.0, ((top >> 8) & 255) / 255.0,
+    if (cairo_pattern_status(pattern) != CAIRO_STATUS_SUCCESS) {
+        cairo_pattern_destroy(pattern);
+        return;
+    }
+
+    cairo_pattern_add_color_stop_rgb(pattern, 0.0, ((top >> 16) & 255) / 255.0, ((top >> 8) & 255) / 255.0,
                                      (top & 255) / 255.0);
-    cairo_pattern_add_color_stop_rgb(pattern, 1, ((bottom >> 16) & 255) / 255.0,
+    cairo_pattern_add_color_stop_rgb(pattern, 1.0, ((bottom >> 16) & 255) / 255.0,
                                      ((bottom >> 8) & 255) / 255.0, (bottom & 255) / 255.0);
 
     rounded(backend->paint, rect, radius);
@@ -56,49 +83,74 @@ static void gradient(void *context, Rect rect, float radius, Color top, Color bo
 }
 
 static void text(void *context, const char *value, Rect rect, float size, unsigned style, Color value_color) {
+    if (!value || !value[0] || rect.w <= 0.0f || size <= 0.0f) {
+        return;
+    }
+
     LinuxCanvas *backend = context;
     PangoFontDescription *font = backend->fonts[(style & TEXT_BOLD) ? 1 : 0];
     pango_font_description_set_absolute_size(font, size * PANGO_SCALE);
     pango_layout_set_font_description(backend->layout, font);
     pango_layout_set_text(backend->layout, value, -1);
-    pango_layout_set_width(backend->layout, (int)(rect.w * PANGO_SCALE));
-    bool single_line = (style & TEXT_VCENTER) || rect.h <= size * 2;
-    pango_layout_set_height(backend->layout, single_line ? -1 : (int)(rect.h * PANGO_SCALE));
+    pango_layout_set_width(backend->layout, (int)(rect.w * PANGO_SCALE + 0.5f));
+
+    bool single_line = (style & TEXT_VCENTER) || rect.h <= size * 2.0f;
+    pango_layout_set_height(backend->layout, single_line ? -1 : (int)(rect.h * PANGO_SCALE + 0.5f));
     pango_layout_set_single_paragraph_mode(backend->layout, single_line);
     pango_layout_set_ellipsize(backend->layout,
                                (style & TEXT_INPUT) ? PANGO_ELLIPSIZE_START : PANGO_ELLIPSIZE_END);
     pango_layout_set_wrap(backend->layout, PANGO_WRAP_WORD_CHAR);
     pango_layout_set_alignment(backend->layout, style & TEXT_CENTER ? PANGO_ALIGN_CENTER : PANGO_ALIGN_LEFT);
-    PangoRectangle ink;
-    PangoRectangle logical;
-    pango_layout_get_pixel_extents(backend->layout, &ink, &logical);
+
+    PangoRectangle ink_raw;
+    PangoRectangle logical_raw;
+    pango_layout_get_extents(backend->layout, &ink_raw, &logical_raw);
+
+    double ink_x = (double)ink_raw.x / PANGO_SCALE;
+    double ink_y = (double)ink_raw.y / PANGO_SCALE;
+    double ink_w = (double)ink_raw.width / PANGO_SCALE;
+    double ink_h = (double)ink_raw.height / PANGO_SCALE;
+    double logical_y = (double)logical_raw.y / PANGO_SCALE;
+    double logical_h = (double)logical_raw.height / PANGO_SCALE;
+
     bool center_ink =
         (style & (TEXT_CENTER | TEXT_VCENTER)) == (TEXT_CENTER | TEXT_VCENTER) && (style & TEXT_BOLD);
 
+    double offset_x = (style & TEXT_CENTER) ? (rect.w - ink_w) * 0.5 - ink_x : 0.0;
+    double offset_y = 0.0;
+
+    if (style & TEXT_VCENTER) {
+        offset_y = center_ink ? (rect.h - ink_h) * 0.5 - ink_y : (rect.h - logical_h) * 0.5 - logical_y;
+    }
+
     color(backend->paint, value_color);
-    cairo_move_to(backend->paint, rect.x + ((style & TEXT_CENTER) ? (rect.w - ink.width) / 2 - ink.x : 0),
-                  rect.y + (!(style & TEXT_VCENTER) ? 0
-                            : center_ink            ? (rect.h - ink.height) / 2 - ink.y
-                                                    : (rect.h - logical.height) / 2 - logical.y));
+    cairo_move_to(backend->paint, rect.x + offset_x, rect.y + offset_y);
     pango_cairo_show_layout(backend->paint, backend->layout);
 }
 
 static float measure(void *context, const char *value, float size) {
+    if (!value || !value[0] || size <= 0.0f) {
+        return 0.0f;
+    }
+
     LinuxCanvas *backend = context;
     pango_font_description_set_absolute_size(backend->fonts[0], size * PANGO_SCALE);
     pango_layout_set_font_description(backend->layout, backend->fonts[0]);
     pango_layout_set_text(backend->layout, value, -1);
     pango_layout_set_width(backend->layout, -1);
+    pango_layout_set_height(backend->layout, -1);
+    pango_layout_set_single_paragraph_mode(backend->layout, TRUE);
     pango_layout_set_ellipsize(backend->layout, PANGO_ELLIPSIZE_NONE);
-    int width;
-    pango_layout_get_pixel_size(backend->layout, &width, NULL);
+    pango_layout_set_alignment(backend->layout, PANGO_ALIGN_LEFT);
 
-    return (float)width;
+    PangoRectangle logical;
+    pango_layout_get_extents(backend->layout, NULL, &logical);
+    return (float)((double)logical.width / PANGO_SCALE);
 }
 
 static void path(void *context, const Point *points, unsigned count, bool closed, bool fill, float width,
                  Color value) {
-    if (!count) {
+    if (!points || !count) {
         return;
     }
 
@@ -115,32 +167,39 @@ static void path(void *context, const Point *points, unsigned count, bool closed
     }
 
     color(backend->paint, value);
-    cairo_set_line_width(backend->paint, width);
+    cairo_set_line_width(backend->paint, width > 0.0f ? width : 1.0f);
     cairo_set_line_cap(backend->paint, CAIRO_LINE_CAP_ROUND);
     cairo_set_line_join(backend->paint, CAIRO_LINE_JOIN_ROUND);
 
     if (fill) {
         cairo_fill(backend->paint);
     }
+
     if (!fill) {
         cairo_stroke(backend->paint);
     }
 }
 
 static void ellipse(void *context, Rect rect, bool fill, float width, Color value) {
+    if (rect.w <= 0.0f || rect.h <= 0.0f) {
+        return;
+    }
+
     LinuxCanvas *backend = context;
     cairo_new_path(backend->paint);
     cairo_save(backend->paint);
-    cairo_translate(backend->paint, rect.x + rect.w / 2, rect.y + rect.h / 2);
-    cairo_scale(backend->paint, rect.w / 2, rect.h / 2);
-    cairo_arc(backend->paint, 0, 0, 1, 0, 6.283185307);
+    cairo_translate(backend->paint, rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+    cairo_scale(backend->paint, rect.w * 0.5, rect.h * 0.5);
+    cairo_arc(backend->paint, 0.0, 0.0, 1.0, 0.0, 6.283185307179586);
     cairo_restore(backend->paint);
+
     color(backend->paint, value);
-    cairo_set_line_width(backend->paint, width);
+    cairo_set_line_width(backend->paint, width > 0.0f ? width : 1.0f);
 
     if (fill) {
         cairo_fill(backend->paint);
     }
+
     if (!fill) {
         cairo_stroke(backend->paint);
     }
@@ -149,34 +208,50 @@ static void ellipse(void *context, Rect rect, bool fill, float width, Color valu
 typedef struct {
     LinuxCanvas *backend;
     Rect rect;
+    float radius;
 } ImagePaint;
 
-static void paint_image(void *context, const Image *image) {
-    ImagePaint *target = context;
-    float scale = target->rect.w / image->width;
-
-    if (scale * image->height > target->rect.h) {
-        scale = target->rect.h / image->height;
+void linux_canvas_paint_image(LinuxCanvas *backend, const Image *image, Rect rect, float radius) {
+    if (!image || !image->pixels || !image->width || !image->height || rect.w <= 0.0f || rect.h <= 0.0f) {
+        return;
     }
 
+    Rect cover = canvas_cover_rect(rect, image->width, image->height);
     cairo_surface_t *surface =
         cairo_image_surface_create_for_data((unsigned char *)image->pixels, CAIRO_FORMAT_RGB24,
                                             (int)image->width, (int)image->height, (int)image->width * 4);
-    cairo_t *paint = target->backend->paint;
+
+    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surface);
+        return;
+    }
+
+    cairo_t *paint = backend->paint;
+    cairo_pattern_t *source = cairo_pattern_create_for_surface(surface);
+    cairo_matrix_t map;
+    double sx = image->width / (double)cover.w;
+    double sy = image->height / (double)cover.h;
+    cairo_matrix_init(&map, sx, 0.0, 0.0, sy, -cover.x * sx, -cover.y * sy);
+    cairo_pattern_set_matrix(source, &map);
+    cairo_pattern_set_filter(source, CAIRO_FILTER_GOOD);
+    cairo_pattern_set_extend(source, CAIRO_EXTEND_PAD);
+
     cairo_save(paint);
-    cairo_translate(paint, target->rect.x + (target->rect.w - image->width * scale) / 2,
-                    target->rect.y + (target->rect.h - image->height * scale) / 2);
-    cairo_scale(paint, scale, scale);
-    cairo_set_source_surface(paint, surface, 0, 0);
-    cairo_pattern_set_filter(cairo_get_source(paint), CAIRO_FILTER_BILINEAR);
-    cairo_rectangle(paint, 0, 0, image->width, image->height);
+    cairo_set_source(paint, source);
+    rounded(paint, rect, radius);
     cairo_fill(paint);
     cairo_restore(paint);
+    cairo_pattern_destroy(source);
     cairo_surface_destroy(surface);
 }
 
-static bool image(void *context, const char *url, Rect rect) {
-    ImagePaint target = {context, rect};
+static void paint_image(void *context, const Image *image) {
+    ImagePaint *target = context;
+    linux_canvas_paint_image(target->backend, image, target->rect, target->radius);
+}
+
+static bool image(void *context, const char *url, Rect rect, float radius) {
+    ImagePaint target = {context, rect, radius};
     return artwork_visit(url, paint_image, &target);
 }
 
@@ -204,6 +279,11 @@ static void release(void *context) {
 static bool retain(void *context, Rect rect) {
     LinuxCanvas *backend = context;
     release(context);
+
+    if ((int)rect.w <= 0 || (int)rect.h <= 0) {
+        return false;
+    }
+
     backend->retained = cairo_image_surface_create(CAIRO_FORMAT_RGB24, (int)rect.w, (int)rect.h);
 
     if (cairo_surface_status(backend->retained) != CAIRO_STATUS_SUCCESS) {
@@ -231,6 +311,8 @@ static void replay(void *context, Rect rect, float opacity) {
 
 void linux_canvas_begin(LinuxCanvas *backend, cairo_t *paint, Canvas *canvas) {
     backend->paint = paint;
+    cairo_set_antialias(paint, CAIRO_ANTIALIAS_BEST);
+
     if (!backend->layout) {
         backend->layout = pango_cairo_create_layout(paint);
     }
@@ -246,8 +328,8 @@ void linux_canvas_begin(LinuxCanvas *backend, cairo_t *paint, Canvas *canvas) {
     pango_cairo_update_layout(paint, backend->layout);
 
     if (!backend->fonts[0]) {
-        backend->fonts[0] = pango_font_description_from_string("Fira Sans");
-        backend->fonts[1] = pango_font_description_from_string("Fira Sans Bold");
+        backend->fonts[0] = pango_font_description_from_string("Inter");
+        backend->fonts[1] = pango_font_description_from_string("Inter Bold");
     }
 
     *canvas = (Canvas){backend, box,  gradient, text,   path,   ellipse, measure,
@@ -260,12 +342,15 @@ void linux_canvas_end(LinuxCanvas *backend) {
 
 void linux_canvas_destroy(LinuxCanvas *backend) {
     release(backend);
+
     if (backend->layout) {
         g_object_unref(backend->layout);
     }
+
     if (backend->fonts[0]) {
         pango_font_description_free(backend->fonts[0]);
     }
+
     if (backend->fonts[1]) {
         pango_font_description_free(backend->fonts[1]);
     }
@@ -274,20 +359,23 @@ void linux_canvas_destroy(LinuxCanvas *backend) {
 void linux_load_font(void) {
     char executable[PATH_MAX];
     ssize_t size = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+
     if (size <= 0) {
         return;
     }
 
     executable[size] = 0;
     char *slash = strrchr(executable, '/');
+
     if (!slash) {
         return;
     }
+
     *slash = 0;
 
     char font[PATH_MAX + 32];
-    snprintf(font, sizeof(font), "%s/assets/FiraSans-Regular.ttf", executable);
+    snprintf(font, sizeof(font), "%s/assets/Inter-Regular.ttf", executable);
     FcConfigAppFontAddFile(FcConfigGetCurrent(), (const FcChar8 *)font);
-    snprintf(font, sizeof(font), "%s/assets/FiraSans-Bold.ttf", executable);
+    snprintf(font, sizeof(font), "%s/assets/Inter-Bold.ttf", executable);
     FcConfigAppFontAddFile(FcConfigGetCurrent(), (const FcChar8 *)font);
 }
