@@ -1,4 +1,7 @@
 #include "artwork.h"
+#include "platform.h"
+
+#include <stdlib.h>
 #include <string.h>
 
 bool artwork_url_valid(const char *url) {
@@ -55,4 +58,33 @@ void artwork_url_parse(yyjson_val *images, char out[ARTWORK_URL_CAPACITY]) {
 
 bool image_dimensions_valid(unsigned width, unsigned height) {
     return width > 0 && height > 0 && width <= ARTWORK_SOURCE_LIMIT && height <= ARTWORK_SOURCE_LIMIT;
+}
+
+bool artwork_fetch(const char *url, Image *image, unsigned *retry_after) {
+    *image = (Image){0};
+
+    if (retry_after) {
+        *retry_after = 0;
+    }
+
+    if (!artwork_url_valid(url)) {
+        return false;
+    }
+
+    HttpResponse response = {0};
+    bool fetched = platform_http("GET", url, NULL, NULL, false, &response);
+
+    if (retry_after) {
+        *retry_after = response.retry_after;
+    }
+
+    bool ok = fetched && response.status == 200 && platform_image_decode(response.body, response.size, image);
+    free(response.body);
+
+    if (!ok) {
+        free(image->pixels);
+        *image = (Image){0};
+    }
+
+    return ok;
 }

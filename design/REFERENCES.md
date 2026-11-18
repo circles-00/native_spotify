@@ -39,6 +39,6 @@ album/playlist/player artwork loads through bounded native decoders. Do not
 insert fictitious listening history or claim pixel-identical parity.
 
 Shared layout, drawing commands, hit testing and animation state live in
-`src/ui/scene*` and `src/ui/icons.c`. The platform adapters render these directly
-with OS-native drawing. The only stock visible text control is the borderless
-Windows search editor, integrated into the custom search pill.
+`src/ui/scene*`, `src/ui/controller.c` and `src/ui/icons.c`. The platform
+adapters in `src/platform/` render these directly with OS-native drawing,
+including the custom-drawn search pill on both Windows and Linux.

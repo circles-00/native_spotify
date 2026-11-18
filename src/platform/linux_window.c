@@ -1,8 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 #include "app.h"
-#include "ui.h"
-#include "scene.h"
+#include "controller.h"
 #include "linux_canvas.h"
+#include "ui.h"
 
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
@@ -31,9 +31,11 @@ typedef struct {
     Cursor hand, caret;
     bool focused, input_active, visible;
     int width, height;
-    Scene scene;
+    UiController controller;
     LinuxCanvas backend;
 } NativeWindow;
+
+static NativeWindow *active_window;
 
 static uint64_t milliseconds(void) {
     struct timespec now;
@@ -42,7 +44,8 @@ static uint64_t milliseconds(void) {
 }
 
 static void input_focus(NativeWindow *window) {
-    bool active = window->focused && !window->scene.login_screen && window->scene.focus == HIT_SEARCH;
+    bool active = window->focused && ui_controller_is_editing(&window->controller);
+
     if (!window->input || active == window->input_active) {
         return;
     }
@@ -50,40 +53,46 @@ static void input_focus(NativeWindow *window) {
     if (active) {
         XSetICFocus(window->input);
     }
+
     if (!active) {
         XUnsetICFocus(window->input);
     }
+
     window->input_active = active;
 }
 
-static void draw(NativeWindow *window) {
-    View view = app_snapshot();
-    artwork_reset(view.session_revision);
-    scene_layout(&window->scene, &view, (float)window->width, (float)window->height);
+static void apply_cursor(NativeWindow *window) {
+    UiCursor cursor = ui_controller_cursor(&window->controller);
 
-    if (window->scene.first_row < view.list.first ||
-        (window->scene.first_row + ROW_SLOTS > view.list.first + view.list.rows_count &&
-         view.list.first + view.list.rows_count < view.list.count) ||
-        window->scene.library_first < view.playlists.first ||
-        (window->scene.library_first + 24 > view.playlists.first + view.playlists.rows_count &&
-         view.playlists.first + view.playlists.rows_count < view.playlists.count)) {
-        view = app_snapshot();
+    if (cursor == UI_CURSOR_IBEAM) {
+        XDefineCursor(window->display, window->handle, window->caret);
+        return;
     }
-    input_focus(window);
 
+    if (cursor == UI_CURSOR_HAND) {
+        XDefineCursor(window->display, window->handle, window->hand);
+        return;
+    }
+
+    XUndefineCursor(window->display, window->handle);
+}
+
+static void draw(NativeWindow *window) {
     if (!window->buffer || cairo_image_surface_get_width(window->buffer) != window->width ||
         cairo_image_surface_get_height(window->buffer) != window->height) {
         if (window->buffer) {
             cairo_surface_destroy(window->buffer);
         }
+
         window->buffer = cairo_image_surface_create(CAIRO_FORMAT_RGB24, window->width, window->height);
     }
 
     cairo_t *paint = cairo_create(window->buffer);
     Canvas canvas;
     linux_canvas_begin(&window->backend, paint, &canvas);
-    scene_draw(&window->scene, &view, &canvas);
+    ui_controller_draw(&window->controller, (float)window->width, (float)window->height, &canvas);
     linux_canvas_end(&window->backend);
+    input_focus(window);
 
     cairo_t *output = cairo_create(window->surface);
     cairo_set_source_surface(output, window->buffer, 0, 0);
@@ -101,6 +110,42 @@ void ui_wake(void) {
     }
 }
 
+static bool mapped_key(KeySym symbol, SceneKey *mapped) {
+    switch (symbol) {
+    case XK_Tab:
+    case XK_ISO_Left_Tab:
+        *mapped = KEY_TAB;
+        return true;
+    case XK_Return:
+    case XK_KP_Enter:
+        *mapped = KEY_ENTER;
+        return true;
+    case XK_BackSpace:
+        *mapped = KEY_BACKSPACE;
+        return true;
+    case XK_Left:
+        *mapped = KEY_LEFT;
+        return true;
+    case XK_Right:
+        *mapped = KEY_RIGHT;
+        return true;
+    case XK_Up:
+        *mapped = KEY_UP;
+        return true;
+    case XK_Down:
+        *mapped = KEY_DOWN;
+        return true;
+    case XK_Escape:
+        *mapped = KEY_ESCAPE;
+        return true;
+    case XK_space:
+        *mapped = KEY_SPACE;
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void key(NativeWindow *window, XKeyEvent *event) {
     char text[SEARCH_CAPACITY];
     KeySym symbol = NoSymbol;
@@ -113,87 +158,38 @@ static void key(NativeWindow *window, XKeyEvent *event) {
         return;
     }
 
-    if ((event->state & ControlMask) && symbol == XK_l) {
-        if (window->scene.login_screen) {
-            return;
-        }
-        window->scene.focus = HIT_SEARCH;
-        window->scene.select_all = true;
-        return;
-    }
+    bool ctrl = (event->state & ControlMask) != 0;
 
-    if (window->scene.setup_popup && (event->state & ControlMask) && symbol == XK_v) {
-        ui_paste_engine_key();
-        return;
-    }
+    if (ctrl && ((symbol >= XK_a && symbol <= XK_z) || (symbol >= XK_A && symbol <= XK_Z))) {
+        UiShortcutResult shortcut = ui_controller_shortcut(&window->controller, (char)symbol, true);
 
-    bool editor = !window->scene.login_screen && window->scene.focus == HIT_SEARCH;
-
-    if (editor && (event->state & ControlMask)) {
-        if (symbol == XK_a) {
-            window->scene.select_all = true;
-        }
-        if (symbol == XK_u) {
-            window->scene.query[0] = 0;
-            scene_query_changed(&window->scene);
-        }
-        if (symbol == XK_v) {
+        if (shortcut == UI_SHORTCUT_PASTE_SEARCH) {
             XConvertSelection(window->display, window->clipboard, window->utf8, window->paste, window->handle,
                               event->time);
+            return;
         }
+
+        if (shortcut == UI_SHORTCUT_HANDLED) {
+            return;
+        }
+    }
+
+    if (ctrl && ui_controller_is_editing(&window->controller)) {
         return;
     }
 
-    if (editor && size > 0 && symbol != XK_Return && symbol != XK_Tab && symbol != XK_BackSpace &&
-        symbol != XK_Escape && !(event->state & ControlMask)) {
-        scene_input(&window->scene, text, (size_t)size);
+    if (!ctrl && size > 0 && symbol != XK_Return && symbol != XK_Tab && symbol != XK_BackSpace &&
+        symbol != XK_Escape && ui_controller_is_editing(&window->controller)) {
+        ui_controller_text(&window->controller, text, (size_t)size);
         return;
     }
 
     SceneKey mapped;
 
-    switch (symbol) {
-    case XK_Tab:
-    case XK_ISO_Left_Tab:
-        mapped = KEY_TAB;
-        break;
-    case XK_Return:
-    case XK_KP_Enter:
-        mapped = KEY_ENTER;
-        break;
-    case XK_BackSpace:
-        mapped = KEY_BACKSPACE;
-        break;
-    case XK_Left:
-        mapped = KEY_LEFT;
-        break;
-    case XK_Right:
-        mapped = KEY_RIGHT;
-        break;
-    case XK_Up:
-        mapped = KEY_UP;
-        break;
-    case XK_Down:
-        mapped = KEY_DOWN;
-        break;
-    case XK_Escape:
-        mapped = KEY_ESCAPE;
-        break;
-    case XK_space:
-        mapped = KEY_SPACE;
-        break;
-    default:
-        return;
-    }
-
-    View view = app_snapshot();
-    scene_key(&window->scene, &view, mapped, (event->state & ShiftMask) != 0);
-    if (window->scene.entrance == 0) {
-        window->scene.last_ms = milliseconds();
+    if (mapped_key(symbol, &mapped)) {
+        ui_controller_key(&window->controller, mapped, (event->state & ShiftMask) != 0, milliseconds());
     }
 }
-
-static NativeWindow *active_window;
 
 void ui_paste_engine_key(void) {
     if (!active_window) {
@@ -232,7 +228,7 @@ static void paste(NativeWindow *window, XSelectionEvent *event) {
         return;
     }
 
-    if (event->property != window->paste || window->scene.focus != HIT_SEARCH || window->scene.login_screen) {
+    if (event->property != window->paste || !ui_controller_is_editing(&window->controller)) {
         return;
     }
 
@@ -244,8 +240,9 @@ static void paste(NativeWindow *window, XSelectionEvent *event) {
     if (XGetWindowProperty(window->display, window->handle, window->paste, 0, SEARCH_CAPACITY, True,
                            window->utf8, &type, &format, &count, &remaining, &data) == Success) {
         if (type == window->utf8 && format == 8 && !remaining && data) {
-            scene_input(&window->scene, (const char *)data, count);
+            ui_controller_text(&window->controller, (const char *)data, count);
         }
+
         if (data) {
             XFree(data);
         }
@@ -260,14 +257,16 @@ int ui_run(bool smoke_test) {
     linux_load_font();
 
     NativeWindow window = {.width = 1280, .height = 800, .visible = true};
-    scene_init(&window.scene);
-    window.scene.last_ms = milliseconds();
+    ui_controller_init(&window.controller, milliseconds());
     window.display = XOpenDisplay(NULL);
+
     if (!window.display) {
         fprintf(stderr, "No X11/XWayland display.\n");
         return 1;
     }
+
     if (pipe(notifications)) {
+        XCloseDisplay(window.display);
         return 1;
     }
 
@@ -285,15 +284,18 @@ int ui_run(bool smoke_test) {
     XSetWMNormalHints(window.display, window.handle, &hints);
 
     XIM method = XOpenIM(window.display, NULL, NULL, NULL);
+
     if (method) {
         window.input = XCreateIC(method, XNInputStyle, XIMPreeditNothing | XIMStatusNothing, XNClientWindow,
                                  window.handle, XNFocusWindow, window.handle, NULL);
     }
 
     long filter = 0;
+
     if (window.input) {
         XGetICValues(window.input, XNFilterEvents, &filter, NULL);
     }
+
     XSelectInput(window.display, window.handle,
                  ExposureMask | StructureNotifyMask | ButtonPressMask | ButtonReleaseMask |
                      PointerMotionMask | KeyPressMask | FocusChangeMask | LeaveWindowMask | filter);
@@ -326,6 +328,7 @@ int ui_run(bool smoke_test) {
         while (XPending(window.display)) {
             XEvent event;
             XNextEvent(window.display, &event);
+
             if (XFilterEvent(&event, None)) {
                 continue;
             }
@@ -360,77 +363,47 @@ int ui_run(bool smoke_test) {
                 input_focus(&window);
                 break;
             case LeaveNotify:
-                scene_hover(&window.scene, HIT_NONE, milliseconds());
+                ui_controller_leave(&window.controller, milliseconds());
                 dirty = true;
                 break;
-            case ButtonPress: {
-                View view = app_snapshot();
-
+            case ButtonPress:
                 if (event.xbutton.button == 4 || event.xbutton.button == 5) {
-                    uint64_t now = milliseconds();
-                    if (window.scene.animating) {
-                        scene_tick(&window.scene, now);
-                    }
-                    window.scene.last_ms = now;
-                    window.scene.hot =
-                        scene_hit(&window.scene, (float)event.xbutton.x, (float)event.xbutton.y);
-                    window.scene.over_panel =
-                        window.scene.panel != PANEL_NONE && event.xbutton.x >= window.scene.side_panel.x &&
-                        event.xbutton.y >= window.scene.side_panel.y &&
-                        event.xbutton.y < window.scene.side_panel.y + window.scene.side_panel.h;
-                    window.scene.over_library =
-                        event.xbutton.x < window.scene.sidebar.x + window.scene.sidebar.w &&
-                        event.xbutton.y >= window.scene.sidebar.y && event.xbutton.y < window.scene.player.y;
-                    scene_scroll(&window.scene, &view, event.xbutton.button == 4 ? -1 : 1);
+                    ui_controller_scroll(&window.controller, (float)event.xbutton.x, (float)event.xbutton.y,
+                                         event.xbutton.button == 4 ? -1 : 1, milliseconds());
                 }
 
                 if (event.xbutton.button == 3) {
-                    scene_context_press(&window.scene, &view, (float)event.xbutton.x, (float)event.xbutton.y);
+                    ui_controller_context_press(&window.controller, (float)event.xbutton.x,
+                                                (float)event.xbutton.y);
                 }
 
-                if (event.xbutton.button == 1) {
-                    scene_press(&window.scene, &view, (float)event.xbutton.x, (float)event.xbutton.y,
-                                milliseconds());
-                    if (window.scene.dragging != HIT_NONE) {
-                        XGrabPointer(window.display, window.handle, False,
-                                     PointerMotionMask | ButtonReleaseMask, GrabModeAsync, GrabModeAsync,
-                                     None, None, event.xbutton.time);
-                    }
+                if (event.xbutton.button == 1 &&
+                    ui_controller_press(&window.controller, (float)event.xbutton.x, (float)event.xbutton.y,
+                                        milliseconds())) {
+                    XGrabPointer(window.display, window.handle, False, PointerMotionMask | ButtonReleaseMask,
+                                 GrabModeAsync, GrabModeAsync, None, None, event.xbutton.time);
                 }
 
                 input_focus(&window);
                 dirty = true;
                 break;
-            }
             case ButtonRelease:
                 if (event.xbutton.button == 1) {
-                    View view = app_snapshot();
-                    scene_pointer_motion(&window.scene, (float)event.xbutton.x, (float)event.xbutton.y);
-                    scene_release(&window.scene, &view, (float)event.xbutton.x, (float)event.xbutton.y);
+                    ui_controller_release(&window.controller, (float)event.xbutton.x, (float)event.xbutton.y,
+                                          milliseconds());
                     XUngrabPointer(window.display, event.xbutton.time);
-                    if (window.scene.entrance == 0) {
-                        window.scene.last_ms = milliseconds();
-                    }
                     dirty = true;
                 }
                 break;
             case MotionNotify: {
-                HitId target = scene_hit(&window.scene, (float)event.xmotion.x, (float)event.xmotion.y);
-                bool changed = target != window.scene.hot || window.scene.dragging != HIT_NONE;
-                if (window.scene.dragging != HIT_NONE) {
-                    scene_pointer_motion(&window.scene, (float)event.xmotion.x, (float)event.xmotion.y);
-                }
-                scene_hover(&window.scene, target, milliseconds());
+                bool cursor_changed = false;
+                bool changed = ui_controller_motion(&window.controller, (float)event.xmotion.x,
+                                                    (float)event.xmotion.y, milliseconds(), &cursor_changed);
 
-                if (changed && target == HIT_SEARCH) {
-                    XDefineCursor(window.display, window.handle, window.caret);
+                if (cursor_changed) {
+                    apply_cursor(&window);
                 }
-                if (changed && target != HIT_SEARCH && target != HIT_NONE) {
-                    XDefineCursor(window.display, window.handle, window.hand);
-                }
-                if (changed && target == HIT_NONE) {
-                    XUndefineCursor(window.display, window.handle);
-                }
+
                 dirty = dirty || changed;
                 break;
             }
@@ -448,23 +421,29 @@ int ui_run(bool smoke_test) {
 
         int sync_timeout = app_tick(window.visible);
         char drain[64];
+
         if (read(notifications[0], drain, sizeof(drain)) > 0) {
             dirty = true;
         }
-        if (window.scene.animating) {
-            scene_tick(&window.scene, milliseconds());
+
+        if (window.controller.scene.animating) {
+            ui_controller_tick(&window.controller, milliseconds());
             dirty = true;
         }
+
         if (dirty) {
             draw(&window);
         }
+
         if (!running) {
             break;
         }
 
         struct pollfd descriptors[] = {{ConnectionNumber(window.display), POLLIN, 0},
                                        {notifications[0], POLLIN, 0}};
-        if (poll(descriptors, 2, window.scene.animating ? 16 : sync_timeout) < 0 && errno != EINTR) {
+
+        if (poll(descriptors, 2, window.controller.scene.animating ? 16 : sync_timeout) < 0 &&
+            errno != EINTR) {
             break;
         }
     }
@@ -477,9 +456,11 @@ int ui_run(bool smoke_test) {
     if (window.input) {
         XDestroyIC(window.input);
     }
+
     if (method) {
         XCloseIM(method);
     }
+
     active_window = NULL;
     linux_canvas_destroy(&window.backend);
     cairo_surface_destroy(window.surface);

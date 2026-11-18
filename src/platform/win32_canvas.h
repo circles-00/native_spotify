@@ -1,7 +1,8 @@
-#ifndef NATIVE_WINDOWS_CANVAS_H
-#define NATIVE_WINDOWS_CANVAS_H
+#ifndef NATIVE_WIN32_CANVAS_H
+#define NATIVE_WIN32_CANVAS_H
 
 #include "canvas.h"
+#include "canvas_raster.h"
 #include <windows.h>
 
 typedef struct WindowsTextBatch WindowsTextBatch;
@@ -21,10 +22,7 @@ typedef struct WindowsCanvas {
     HBITMAP frame_image;
     HGDIOBJ frame_original;
     int frame_width, frame_height;
-    struct {
-        Rect rect;
-        float radius;
-    } clips[8];
+    RasterRoundClip clips[8];
     unsigned clip_depth;
 } WindowsCanvas;
 

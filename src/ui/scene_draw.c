@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "artwork_cache.h"
 #include "collection_scene.h"
 #include "home_scene.h"
 #include "panel_scene.h"
@@ -114,11 +115,8 @@ static void header(Scene *scene, const View *view, Canvas *canvas) {
 
     canvas_icon(canvas, ICON_SEARCH, (Rect){scene->search.x + 16, 20, 24, 24}, MUTED);
 
-    if (!canvas->native_input) {
-        Rect input = {scene->search.x + 50, 20, scene->search.w - 68, 24};
-        input_text(scene, canvas, input, scene->query, "What do you want to play?",
-                   scene->focus == HIT_SEARCH);
-    }
+    Rect input = {scene->search.x + 50, 20, scene->search.w - 68, 24};
+    input_text(scene, canvas, input, scene->query, "What do you want to play?", scene->focus == HIT_SEARCH);
 
     Rect avatar = scene->hits[HIT_PROFILE].rect;
     canvas->box(canvas->context, avatar, avatar.w / 2,

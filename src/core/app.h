@@ -94,7 +94,10 @@ typedef struct {
     unsigned setup_revision;
 } View;
 
+typedef void (*AppWake)(void);
+
 void app_initialize(void);
+void app_set_wake(AppWake wake);
 void app_shutdown(void);
 void app_action(Action action);
 bool app_connect(void);

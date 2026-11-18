@@ -1,6 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "linux_canvas.h"
-#include "artwork.h"
+#include "artwork_cache.h"
 
 #include <fontconfig/fontconfig.h>
 #include <limits.h>
@@ -250,8 +250,8 @@ void linux_canvas_begin(LinuxCanvas *backend, cairo_t *paint, Canvas *canvas) {
         backend->fonts[1] = pango_font_description_from_string("Fira Sans Bold");
     }
 
-    *canvas = (Canvas){backend, false, box,  gradient, text,   path,   ellipse,
-                       measure, image, clip, unclip,   retain, replay, release};
+    *canvas = (Canvas){backend, box,  gradient, text,   path,   ellipse, measure,
+                       image,   clip, unclip,   retain, replay, release};
 }
 
 void linux_canvas_end(LinuxCanvas *backend) {

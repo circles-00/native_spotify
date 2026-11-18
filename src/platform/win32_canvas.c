@@ -1,12 +1,12 @@
-#include "windows_canvas.h"
-#include "artwork.h"
+#include "win32_canvas.h"
+#include "artwork_cache.h"
 #include "core.h"
 
-#include <stdio.h>
-#include <wchar.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 #define TEXT_BATCH_LIMIT 256
 
@@ -53,99 +53,29 @@ static void occlude_text(WindowsCanvas *backend, Rect rect, float radius) {
     DeleteObject(region);
 }
 
-static bool dib_surface(HDC paint, uint32_t **pixels, int *width, int *height, RECT *clip) {
+static bool dib_surface(const WindowsCanvas *backend, RasterSurface *surface) {
     DIBSECTION dib = {0};
 
-    if (GetObjectW(GetCurrentObject(paint, OBJ_BITMAP), sizeof(dib), &dib) != sizeof(dib) ||
+    if (GetObjectW(GetCurrentObject(backend->paint, OBJ_BITMAP), sizeof(dib), &dib) != sizeof(dib) ||
         !dib.dsBm.bmBits || dib.dsBmih.biBitCount != 32 || dib.dsBmih.biHeight >= 0) {
         return false;
     }
 
-    *pixels = dib.dsBm.bmBits;
-    *width = dib.dsBmih.biWidth;
-    *height = -dib.dsBmih.biHeight;
-    GetClipBox(paint, clip);
+    RECT clip;
+    GetClipBox(backend->paint, &clip);
     GdiFlush();
+
+    *surface = (RasterSurface){
+        .pixels = dib.dsBm.bmBits,
+        .width = dib.dsBmih.biWidth,
+        .height = -dib.dsBmih.biHeight,
+        .clip = {clip.left, clip.top, clip.right, clip.bottom},
+        .scale = backend->scale,
+        .round_clips = backend->clips,
+        .round_clip_depth = backend->clip_depth < 8 ? backend->clip_depth : 8,
+    };
+
     return true;
-}
-
-static float fast_sqrt(float squared, float hint) {
-    if (squared <= 0) {
-        return 0;
-    }
-
-    float guess = hint > 1 ? hint : 1;
-
-    for (unsigned step = 0; step < 5; ++step) {
-        guess = .5f * (guess + squared / guess);
-    }
-
-    return guess;
-}
-
-static void blend_pixel(uint32_t *pixel, uint32_t red, uint32_t green, uint32_t blue, float coverage) {
-    if (coverage <= 0) {
-        return;
-    }
-
-    if (coverage >= 1) {
-        *pixel = (red << 16) | (green << 8) | blue;
-        return;
-    }
-
-    uint32_t current = *pixel;
-    uint32_t alpha = (uint32_t)(coverage * 255 + .5f);
-    uint32_t out_r = (((current >> 16) & 255) * (255 - alpha) + red * alpha) / 255;
-    uint32_t out_g = (((current >> 8) & 255) * (255 - alpha) + green * alpha) / 255;
-    uint32_t out_b = ((current & 255) * (255 - alpha) + blue * alpha) / 255;
-    *pixel = (out_r << 16) | (out_g << 8) | out_b;
-}
-
-static float round_rect_sdf(float px, float py, float cx, float cy, float hx, float hy, float r) {
-    float dx = (px > cx ? px - cx : cx - px) - hx;
-    float dy = (py > cy ? py - cy : cy - py) - hy;
-
-    if (dx > 0 && dy > 0) {
-        return fast_sqrt(dx * dx + dy * dy, r) - r;
-    }
-
-    return (dx > dy ? dx : dy) - r;
-}
-
-static float clip_coverage(const WindowsCanvas *backend, float px, float py) {
-    float coverage = 1.0f;
-
-    for (unsigned i = 0; i < backend->clip_depth; ++i) {
-        Rect c = backend->clips[i].rect;
-        float r = backend->clips[i].radius * backend->scale;
-
-        if (r <= 0) {
-            continue;
-        }
-
-        float rw = c.w * backend->scale;
-        float rh = c.h * backend->scale;
-
-        if (r > rw * .5f) {
-            r = rw * .5f;
-        }
-        if (r > rh * .5f) {
-            r = rh * .5f;
-        }
-
-        float dist = round_rect_sdf(px, py, (c.x + c.w * .5f) * backend->scale,
-                                    (c.y + c.h * .5f) * backend->scale, rw * .5f - r, rh * .5f - r, r);
-        float c_cov = .5f - dist;
-
-        if (c_cov < coverage) {
-            coverage = c_cov;
-        }
-        if (coverage <= 0) {
-            return 0;
-        }
-    }
-
-    return coverage;
 }
 
 static COLORREF color(Color value) {
@@ -161,81 +91,23 @@ static RECT bounds(WindowsCanvas *backend, Rect rect) {
                   pixel(backend, rect.y + rect.h)};
 }
 
-static void draw_aa_round_rect(const WindowsCanvas *backend, uint32_t *pixels, int width, int height,
-                               RECT clip, float rx, float ry, float rw, float rh, float r, Color top,
-                               Color bottom) {
-    if (r < 0) {
-        r = 0;
-    }
-    if (r > rw * .5f) {
-        r = rw * .5f;
-    }
-    if (r > rh * .5f) {
-        r = rh * .5f;
+static HFONT canvas_font(WindowsCanvas *backend, float size, bool bold) {
+    unsigned slot = (unsigned)size;
+
+    if (slot >= 80) {
+        slot = 79;
     }
 
-    int left = (int)(rx - 1);
-    int right = (int)(rx + rw + 2);
-    int top_y = (int)(ry - 1);
-    int bottom_y = (int)(ry + rh + 2);
+    unsigned weight = bold ? 1 : 0;
 
-    if (left < clip.left) {
-        left = clip.left;
-    }
-    if (top_y < clip.top) {
-        top_y = clip.top;
-    }
-    if (right > clip.right) {
-        right = clip.right;
-    }
-    if (bottom_y > clip.bottom) {
-        bottom_y = clip.bottom;
-    }
-    if (left < 0) {
-        left = 0;
-    }
-    if (top_y < 0) {
-        top_y = 0;
-    }
-    if (right > width) {
-        right = width;
-    }
-    if (bottom_y > height) {
-        bottom_y = height;
+    if (!backend->fonts[slot][weight]) {
+        backend->fonts[slot][weight] =
+            CreateFontW(-pixel(backend, size), 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, FALSE, FALSE, FALSE,
+                        DEFAULT_CHARSET, OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS,
+                        backend->native_text ? 6 : ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Fira Sans");
     }
 
-    float cx = rx + rw * .5f;
-    float cy = ry + rh * .5f;
-    float hx = rw * .5f - r;
-    float hy = rh * .5f - r;
-
-    for (int y = top_y; y < bottom_y; ++y) {
-        float py = (float)y + .5f;
-        float t = rh > 1 ? (py - ry) / rh : 0;
-        Color row_color = top == bottom ? top : color_mix(top, bottom, t);
-        uint32_t red = (row_color >> 16) & 255;
-        uint32_t green = (row_color >> 8) & 255;
-        uint32_t blue = row_color & 255;
-
-        for (int x = left; x < right; ++x) {
-            float px = (float)x + .5f;
-            float distance = round_rect_sdf(px, py, cx, cy, hx, hy, r);
-            float coverage = .5f - distance;
-
-            if (coverage <= 0) {
-                continue;
-            }
-
-            if (backend->clip_depth) {
-                float c_cov = clip_coverage(backend, px, py);
-                if (c_cov < coverage) {
-                    coverage = c_cov;
-                }
-            }
-
-            blend_pixel(&pixels[y * width + x], red, green, blue, coverage);
-        }
-    }
+    return backend->fonts[slot][weight];
 }
 
 static void box(void *context, Rect rect, float radius, Color value) {
@@ -247,14 +119,10 @@ static void box(void *context, Rect rect, float radius, Color value) {
     occlude_text(backend, rect, radius);
 
     if (radius > 0 || backend->clip_depth > 0) {
-        uint32_t *pixels = NULL;
-        int width = 0, height = 0;
-        RECT clip;
+        RasterSurface surface;
 
-        if (dib_surface(backend->paint, &pixels, &width, &height, &clip)) {
-            draw_aa_round_rect(backend, pixels, width, height, clip, rect.x * backend->scale,
-                               rect.y * backend->scale, rect.w * backend->scale, rect.h * backend->scale,
-                               radius * backend->scale, value, value);
+        if (dib_surface(backend, &surface)) {
+            canvas_raster_round_rect(&surface, rect, radius, value, value);
             return;
         }
     }
@@ -279,14 +147,10 @@ static void gradient(void *context, Rect rect, float radius, Color top, Color bo
 
     WindowsCanvas *backend = context;
     occlude_text(backend, rect, radius);
-    uint32_t *pixels = NULL;
-    int width = 0, height = 0;
-    RECT clip;
+    RasterSurface surface;
 
-    if (dib_surface(backend->paint, &pixels, &width, &height, &clip)) {
-        draw_aa_round_rect(backend, pixels, width, height, clip, rect.x * backend->scale,
-                           rect.y * backend->scale, rect.w * backend->scale, rect.h * backend->scale,
-                           radius * backend->scale, top, bottom);
+    if (dib_surface(backend, &surface)) {
+        canvas_raster_round_rect(&surface, rect, radius, top, bottom);
         return;
     }
 
@@ -331,20 +195,25 @@ static void center_text(HDC paint, const wchar_t *text, RECT *area, bool horizon
         }
 
         int start = metrics.tmAscent - glyph.gmptGlyphOrigin.y;
+
         if (start < top) {
             top = start;
         }
+
         if (start + (int)glyph.gmBlackBoxY > bottom) {
             bottom = start + (int)glyph.gmBlackBoxY;
         }
 
         int x = advance + glyph.gmptGlyphOrigin.x;
+
         if (x < left) {
             left = x;
         }
+
         if (x + (int)glyph.gmBlackBoxX > right) {
             right = x + (int)glyph.gmBlackBoxX;
         }
+
         advance += glyph.gmCellIncX;
     }
 
@@ -383,25 +252,15 @@ static void text(void *context, const char *value, Rect rect, float size, unsign
                                       (int)(clip.right * ratio + .5f), (int)(clip.bottom * ratio + .5f));
         return;
     }
+
     bool bold = (style & TEXT_BOLD) != 0;
     wchar_t utf16[1024];
+
     if (!MultiByteToWideChar(CP_UTF8, 0, value, -1, utf16, 1024)) {
         return;
     }
 
-    unsigned slot = (unsigned)size;
-    if (slot >= 80) {
-        slot = 79;
-    }
-
-    if (!backend->fonts[slot][bold ? 1 : 0]) {
-        backend->fonts[slot][bold ? 1 : 0] =
-            CreateFontW(-pixel(backend, size), 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, FALSE, FALSE, FALSE,
-                        DEFAULT_CHARSET, OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS,
-                        backend->native_text ? 6 : ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Fira Sans");
-    }
-
-    HGDIOBJ previous = SelectObject(backend->paint, backend->fonts[slot][bold ? 1 : 0]);
+    HGDIOBJ previous = SelectObject(backend->paint, canvas_font(backend, size, bold));
     SetTextColor(backend->paint, color(value_color));
     SetBkMode(backend->paint, TRANSPARENT);
     RECT area = bounds(backend, rect);
@@ -412,12 +271,52 @@ static void text(void *context, const char *value, Rect rect, float size, unsign
         center_text(backend->paint, utf16, &area, true);
     }
 
+    if (style & TEXT_INPUT) {
+        SIZE extent = {0};
+
+        if (GetTextExtentPoint32W(backend->paint, utf16, (int)wcslen(utf16), &extent) &&
+            extent.cx > area.right - area.left) {
+            int saved = SaveDC(backend->paint);
+            IntersectClipRect(backend->paint, area.left, area.top, area.right, area.bottom);
+            DrawTextW(backend->paint, utf16, -1, &area,
+                      DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP);
+            RestoreDC(backend->paint, saved);
+            SelectObject(backend->paint, previous);
+            return;
+        }
+    }
+
     bool single_line = (style & TEXT_VCENTER) || rect.h <= size * 2;
     DrawTextW(backend->paint, utf16, -1, &area,
               (style & TEXT_CENTER ? DT_CENTER : DT_LEFT) |
                   ((style & TEXT_VCENTER) && !center_ink ? DT_VCENTER : 0) | DT_NOPREFIX | DT_END_ELLIPSIS |
                   DT_NOCLIP | (single_line ? DT_SINGLELINE : DT_WORDBREAK));
     SelectObject(backend->paint, previous);
+}
+
+static float measure(void *context, const char *value, float size) {
+    WindowsCanvas *backend = context;
+
+    if (!value || !value[0] || backend->scale <= 0) {
+        return 0;
+    }
+
+    wchar_t utf16[1024];
+
+    if (!MultiByteToWideChar(CP_UTF8, 0, value, -1, utf16, 1024)) {
+        return 0;
+    }
+
+    HGDIOBJ previous = SelectObject(backend->paint, canvas_font(backend, size, false));
+    SIZE extent = {0};
+    BOOL ok = GetTextExtentPoint32W(backend->paint, utf16, (int)wcslen(utf16), &extent);
+    SelectObject(backend->paint, previous);
+
+    if (!ok) {
+        return 0;
+    }
+
+    return (float)extent.cx / backend->scale;
 }
 
 static HPEN pen(WindowsCanvas *backend, float width, Color value) {
@@ -427,24 +326,6 @@ static HPEN pen(WindowsCanvas *backend, float width, Color value) {
                         &brush, 0, NULL);
 }
 
-static float segment_dist_sq(float px, float py, float ax, float ay, float bx, float by) {
-    float vx = bx - ax;
-    float vy = by - ay;
-    float len_sq = vx * vx + vy * vy;
-    float t = len_sq > 1e-4f ? ((px - ax) * vx + (py - ay) * vy) / len_sq : 0;
-
-    if (t < 0) {
-        t = 0;
-    }
-    if (t > 1) {
-        t = 1;
-    }
-
-    float dx = px - (ax + t * vx);
-    float dy = py - (ay + t * vy);
-    return dx * dx + dy * dy;
-}
-
 static void path(void *context, const Point *source, unsigned count, bool closed, bool fill, float width,
                  Color value) {
     if (!count || count > 24) {
@@ -452,105 +333,10 @@ static void path(void *context, const Point *source, unsigned count, bool closed
     }
 
     WindowsCanvas *backend = context;
-    uint32_t *pixels = NULL;
-    int surf_w = 0, surf_h = 0;
-    RECT clip;
+    RasterSurface surface;
 
-    if (dib_surface(backend->paint, &pixels, &surf_w, &surf_h, &clip)) {
-        Point pts[25];
-        float min_x = 1e9f, min_y = 1e9f, max_x = -1e9f, max_y = -1e9f;
-
-        for (unsigned i = 0; i < count; ++i) {
-            pts[i] = (Point){source[i].x * backend->scale, source[i].y * backend->scale};
-            if (pts[i].x < min_x) {
-                min_x = pts[i].x;
-            }
-            if (pts[i].y < min_y) {
-                min_y = pts[i].y;
-            }
-            if (pts[i].x > max_x) {
-                max_x = pts[i].x;
-            }
-            if (pts[i].y > max_y) {
-                max_y = pts[i].y;
-            }
-        }
-
-        if (closed) {
-            pts[count] = pts[0];
-        }
-
-        float half = fill ? 0 : (width * backend->scale > 1.2f ? width * backend->scale * .5f : .6f);
-        int left = (int)(min_x - half - 2);
-        int right = (int)(max_x + half + 3);
-        int top = (int)(min_y - half - 2);
-        int bottom = (int)(max_y + half + 3);
-
-        if (left < clip.left) {
-            left = clip.left;
-        }
-        if (top < clip.top) {
-            top = clip.top;
-        }
-        if (right > clip.right) {
-            right = clip.right;
-        }
-        if (bottom > clip.bottom) {
-            bottom = clip.bottom;
-        }
-        if (left < 0) {
-            left = 0;
-        }
-        if (top < 0) {
-            top = 0;
-        }
-        if (right > surf_w) {
-            right = surf_w;
-        }
-        if (bottom > surf_h) {
-            bottom = surf_h;
-        }
-
-        uint32_t red = (value >> 16) & 255;
-        uint32_t green = (value >> 8) & 255;
-        uint32_t blue = value & 255;
-        unsigned segments = closed || fill ? count : count - 1;
-
-        for (int y = top; y < bottom; ++y) {
-            for (int x = left; x < right; ++x) {
-                float px = (float)x + .5f;
-                float py = (float)y + .5f;
-                float min_sq = 1e9f;
-                bool inside = false;
-
-                for (unsigned i = 0; i < segments; ++i) {
-                    Point a = pts[i];
-                    Point b = pts[(i + 1) % count];
-                    float d_sq = segment_dist_sq(px, py, a.x, a.y, b.x, b.y);
-                    if (d_sq < min_sq) {
-                        min_sq = d_sq;
-                    }
-                    if (fill && ((a.y > py) != (b.y > py)) &&
-                        (px < (b.x - a.x) * (py - a.y) / (b.y - a.y) + a.x)) {
-                        inside = !inside;
-                    }
-                }
-
-                float dist = fast_sqrt(min_sq, half + 1);
-                float coverage = fill ? .5f + (inside ? dist : -dist) : half + .5f - dist;
-
-                if (coverage <= 0) {
-                    continue;
-                }
-                if (backend->clip_depth) {
-                    float c_cov = clip_coverage(backend, px, py);
-                    if (c_cov < coverage) {
-                        coverage = c_cov;
-                    }
-                }
-                blend_pixel(&pixels[y * surf_w + x], red, green, blue, coverage);
-            }
-        }
+    if (dib_surface(backend, &surface)) {
+        canvas_raster_path(&surface, source, count, closed, fill, width, value);
         return;
     }
 
@@ -559,6 +345,7 @@ static void path(void *context, const Point *source, unsigned count, bool closed
     for (unsigned i = 0; i < count; ++i) {
         points[i] = (POINT){pixel(backend, source[i].x), pixel(backend, source[i].y)};
     }
+
     if (closed) {
         points[count] = points[0];
     }
@@ -571,6 +358,7 @@ static void path(void *context, const Point *source, unsigned count, bool closed
     if (fill) {
         Polygon(backend->paint, points, (int)count);
     }
+
     if (!fill) {
         Polyline(backend->paint, points, (int)(count + (closed ? 1 : 0)));
     }
@@ -581,100 +369,21 @@ static void path(void *context, const Point *source, unsigned count, bool closed
     DeleteObject(brush);
 }
 
-static void draw_aa_stroke_circle(uint32_t *pixels, int width, int height, RECT clip, float cx, float cy,
-                                  float radius, float thickness, Color value) {
-    float half = thickness * .5f;
-    int left = (int)(cx - radius - half - 1);
-    int right = (int)(cx + radius + half + 2);
-    int top = (int)(cy - radius - half - 1);
-    int bottom = (int)(cy + radius + half + 2);
-
-    if (left < clip.left) {
-        left = clip.left;
-    }
-    if (top < clip.top) {
-        top = clip.top;
-    }
-    if (right > clip.right) {
-        right = clip.right;
-    }
-    if (bottom > clip.bottom) {
-        bottom = clip.bottom;
-    }
-    if (left < 0) {
-        left = 0;
-    }
-    if (top < 0) {
-        top = 0;
-    }
-    if (right > width) {
-        right = width;
-    }
-    if (bottom > height) {
-        bottom = height;
-    }
-
-    uint32_t red = (value >> 16) & 255;
-    uint32_t green = (value >> 8) & 255;
-    uint32_t blue = value & 255;
-    uint32_t solid = (red << 16) | (green << 8) | blue;
-
-    for (int y = top; y < bottom; ++y) {
-        for (int x = left; x < right; ++x) {
-            float dx = (float)x + .5f - cx;
-            float dy = (float)y + .5f - cy;
-            float squared = dx * dx + dy * dy;
-            float distance = 0;
-
-            if (squared > 0) {
-                float guess = radius > 1 ? radius : 1;
-                for (unsigned step = 0; step < 5; ++step) {
-                    guess = .5f * (guess + squared / guess);
-                }
-                distance = guess;
-            }
-
-            float ring = distance > radius ? distance - radius : radius - distance;
-            float coverage = half + .5f - ring;
-
-            if (coverage <= 0) {
-                continue;
-            }
-            if (coverage >= 1) {
-                pixels[y * width + x] = solid;
-                continue;
-            }
-
-            uint32_t current = pixels[y * width + x];
-            uint32_t alpha = (uint32_t)(coverage * 255 + .5f);
-            uint32_t out_r = (((current >> 16) & 255) * (255 - alpha) + red * alpha) / 255;
-            uint32_t out_g = (((current >> 8) & 255) * (255 - alpha) + green * alpha) / 255;
-            uint32_t out_b = ((current & 255) * (255 - alpha) + blue * alpha) / 255;
-            pixels[y * width + x] = (out_r << 16) | (out_g << 8) | out_b;
-        }
-    }
-}
-
 static void ellipse(void *context, Rect rect, bool fill, float width, Color value) {
     WindowsCanvas *backend = context;
     RECT area = bounds(backend, rect);
 
     if (area.right > area.left && area.bottom > area.top &&
         area.right - area.left == area.bottom - area.top) {
-        uint32_t *pixels = NULL;
-        int surf_w = 0, surf_h = 0;
-        RECT clip;
+        RasterSurface surface;
 
-        if (dib_surface(backend->paint, &pixels, &surf_w, &surf_h, &clip)) {
+        if (dib_surface(backend, &surface)) {
             if (fill) {
-                draw_aa_round_rect(backend, pixels, surf_w, surf_h, clip, rect.x * backend->scale,
-                                   rect.y * backend->scale, rect.w * backend->scale, rect.h * backend->scale,
-                                   rect.w * .5f * backend->scale, value, value);
+                canvas_raster_round_rect(&surface, rect, rect.w * .5f, value, value);
             } else {
-                draw_aa_stroke_circle(pixels, surf_w, surf_h, clip, (rect.x + rect.w * .5f) * backend->scale,
-                                      (rect.y + rect.h * .5f) * backend->scale, rect.w * .5f * backend->scale,
-                                      width * backend->scale > 1 ? width * backend->scale : 1, value);
+                canvas_raster_stroke_circle(&surface, rect, width, value);
             }
+
             return;
         }
     }
@@ -710,101 +419,10 @@ static void paint_image(void *context, const Image *image) {
                  target->rect.y + (target->rect.h - image->height * scale) / 2, image->width * scale,
                  image->height * scale};
     occlude_text(backend, rect, 0);
-    uint32_t *pixels = NULL;
-    int surf_w = 0, surf_h = 0;
-    RECT clip;
+    RasterSurface surface;
 
-    if (dib_surface(backend->paint, &pixels, &surf_w, &surf_h, &clip)) {
-        float rx = rect.x * backend->scale;
-        float ry = rect.y * backend->scale;
-        float rw = rect.w * backend->scale;
-        float rh = rect.h * backend->scale;
-        int left = (int)rx;
-        int right = (int)(rx + rw + .5f);
-        int top = (int)ry;
-        int bottom = (int)(ry + rh + .5f);
-
-        if (left < clip.left) {
-            left = clip.left;
-        }
-        if (top < clip.top) {
-            top = clip.top;
-        }
-        if (right > clip.right) {
-            right = clip.right;
-        }
-        if (bottom > clip.bottom) {
-            bottom = clip.bottom;
-        }
-        if (left < 0) {
-            left = 0;
-        }
-        if (top < 0) {
-            top = 0;
-        }
-        if (right > surf_w) {
-            right = surf_w;
-        }
-        if (bottom > surf_h) {
-            bottom = surf_h;
-        }
-
-        for (int y = top; y < bottom; ++y) {
-            float py = (float)y + .5f;
-            float v = (py - ry) / rh * (float)image->height - .5f;
-            int sy0 = (int)v;
-            if (sy0 < 0) {
-                sy0 = 0;
-            }
-            if ((unsigned)sy0 >= image->height) {
-                sy0 = (int)image->height - 1;
-            }
-            int sy1 = (unsigned)(sy0 + 1) < image->height ? sy0 + 1 : sy0;
-            float fy = v - (float)sy0;
-            if (fy < 0) {
-                fy = 0;
-            }
-
-            for (int x = left; x < right; ++x) {
-                float px = (float)x + .5f;
-                float cov = clip_coverage(backend, px, py);
-                if (cov <= 0) {
-                    continue;
-                }
-
-                float u = (px - rx) / rw * (float)image->width - .5f;
-                int sx0 = (int)u;
-                if (sx0 < 0) {
-                    sx0 = 0;
-                }
-                if ((unsigned)sx0 >= image->width) {
-                    sx0 = (int)image->width - 1;
-                }
-                int sx1 = (unsigned)(sx0 + 1) < image->width ? sx0 + 1 : sx0;
-                float fx = u - (float)sx0;
-                if (fx < 0) {
-                    fx = 0;
-                }
-
-                uint32_t p00 = image->pixels[(unsigned)sy0 * image->width + (unsigned)sx0];
-                uint32_t p10 = image->pixels[(unsigned)sy0 * image->width + (unsigned)sx1];
-                uint32_t p01 = image->pixels[(unsigned)sy1 * image->width + (unsigned)sx0];
-                uint32_t p11 = image->pixels[(unsigned)sy1 * image->width + (unsigned)sx1];
-
-                float w00 = (1 - fx) * (1 - fy);
-                float w10 = fx * (1 - fy);
-                float w01 = (1 - fx) * fy;
-                float w11 = fx * fy;
-
-                uint32_t r = (uint32_t)(((p00 >> 16) & 255) * w00 + ((p10 >> 16) & 255) * w10 +
-                                        ((p01 >> 16) & 255) * w01 + ((p11 >> 16) & 255) * w11 + .5f);
-                uint32_t g = (uint32_t)(((p00 >> 8) & 255) * w00 + ((p10 >> 8) & 255) * w10 +
-                                        ((p01 >> 8) & 255) * w01 + ((p11 >> 8) & 255) * w11 + .5f);
-                uint32_t b = (uint32_t)((p00 & 255) * w00 + (p10 & 255) * w10 + (p01 & 255) * w01 +
-                                        (p11 & 255) * w11 + .5f);
-                blend_pixel(&pixels[y * surf_w + x], r, g, b, cov);
-            }
-        }
+    if (dib_surface(backend, &surface)) {
+        canvas_raster_image(&surface, image, rect);
         return;
     }
 
@@ -842,6 +460,7 @@ static void clip(void *context, Rect rect, float radius) {
         backend->clips[backend->clip_depth].rect = rect;
         backend->clips[backend->clip_depth].radius = radius;
     }
+
     ++backend->clip_depth;
 }
 
@@ -880,6 +499,7 @@ static bool retain(void *context, Rect rect) {
         if (backend->retained) {
             DeleteDC(backend->retained);
         }
+
         if (backend->retained_image) {
             DeleteObject(backend->retained_image);
         }
@@ -917,8 +537,8 @@ void windows_canvas_begin(WindowsCanvas *backend, HDC paint, float scale, Canvas
     backend->paint = paint;
     backend->scale = scale;
     backend->clip_depth = 0;
-    *canvas = (Canvas){backend, true,  box,  gradient, text,   path,   ellipse,
-                       NULL,    image, clip, unclip,   retain, replay, release};
+    *canvas = (Canvas){backend, box,  gradient, text,   path,   ellipse, measure,
+                       image,   clip, unclip,   retain, replay, release};
 }
 
 static void discard_text(WindowsCanvas *backend) {
@@ -953,11 +573,13 @@ void windows_canvas_destroy(WindowsCanvas *backend) {
     }
 
     release(backend);
+
     for (unsigned i = 0; i < 80; ++i) {
         for (unsigned weight = 0; weight < 2; ++weight) {
             if (backend->fonts[i][weight]) {
                 DeleteObject(backend->fonts[i][weight]);
             }
+
             backend->fonts[i][weight] = NULL;
         }
     }
@@ -1069,11 +691,13 @@ void windows_load_font(void) {
 
     wchar_t path[32768];
     DWORD size = GetModuleFileNameW(NULL, path, 32768);
+
     if (!size || size >= 32768) {
         return;
     }
 
     wchar_t *slash = wcsrchr(path, L'\\');
+
     if (!slash || (size_t)(slash - path) + 32 >= 32768) {
         return;
     }

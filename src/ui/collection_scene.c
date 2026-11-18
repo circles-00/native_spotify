@@ -1,4 +1,5 @@
 #include "collection_scene.h"
+#include "artwork_cache.h"
 
 #include <stdio.h>
 #include <string.h>

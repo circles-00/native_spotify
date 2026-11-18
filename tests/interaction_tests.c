@@ -2,6 +2,8 @@
 #include "app.h"
 #include "platform.h"
 #include "player_fixture.h"
+#include "ui/canvas_raster.h"
+#include "ui/controller.h"
 #include "ui/scene.h"
 
 #include <stdio.h>
@@ -9,13 +11,13 @@
 #include <string.h>
 
 #ifndef _WIN32
-#include "ui/linux_canvas.h"
+#include "platform/linux_canvas.h"
 #include <fontconfig/fontconfig.h>
 #endif
 
 #ifdef _WIN32
 #include <windows.h>
-#include "ui/windows_canvas.h"
+#include "platform/win32_canvas.h"
 #else
 #include <time.h>
 #endif
@@ -1212,6 +1214,60 @@ static void test_native_text_compositor(void) {
 }
 #endif
 
+static void test_controller_and_raster(void) {
+    UiController controller;
+    ui_controller_init(&controller, 1000);
+    CHECK(ui_controller_cursor(&controller) == UI_CURSOR_ARROW);
+    ui_controller_layout(&controller, 1280, 800);
+    CHECK(controller.scene.login_screen);
+    CHECK(!ui_controller_is_editing(&controller));
+    CHECK(ui_controller_shortcut(&controller, 'l', true) == UI_SHORTCUT_HANDLED);
+    CHECK(!ui_controller_is_editing(&controller));
+
+    controller.scene.hot = HIT_SEARCH;
+    CHECK(ui_controller_cursor(&controller) == UI_CURSOR_IBEAM);
+    controller.scene.hot = HIT_HOME;
+    CHECK(ui_controller_cursor(&controller) == UI_CURSOR_HAND);
+
+    controller.scene.login_screen = false;
+    controller.scene.focus = HIT_NONE;
+    CHECK(ui_controller_shortcut(&controller, 'L', true) == UI_SHORTCUT_HANDLED);
+    CHECK(controller.scene.focus == HIT_SEARCH && controller.scene.select_all);
+    CHECK(ui_controller_is_editing(&controller));
+    CHECK(ui_controller_text(&controller, "bach", 4));
+    CHECK(!strcmp(controller.scene.query, "bach") && !controller.scene.select_all);
+    CHECK(ui_controller_shortcut(&controller, 'a', true) == UI_SHORTCUT_HANDLED);
+    CHECK(controller.scene.select_all);
+    CHECK(ui_controller_shortcut(&controller, 'v', true) == UI_SHORTCUT_PASTE_SEARCH);
+    CHECK(ui_controller_shortcut(&controller, 'u', true) == UI_SHORTCUT_HANDLED);
+    CHECK(!controller.scene.query[0]);
+
+    bool cursor_changed = false;
+    CHECK(ui_controller_motion(&controller, 0, 0, 1016, &cursor_changed));
+    CHECK(cursor_changed && ui_controller_cursor(&controller) == UI_CURSOR_ARROW);
+    ui_controller_leave(&controller, 1032);
+    CHECK(controller.scene.hot == HIT_NONE);
+
+    uint32_t pixels[64 * 64] = {0};
+    RasterSurface surface = {
+        .pixels = pixels,
+        .width = 64,
+        .height = 64,
+        .clip = {0, 0, 64, 64},
+        .scale = 1.0f,
+    };
+    canvas_raster_round_rect(&surface, (Rect){8, 8, 32, 32}, 8, 0xffffff, 0xffffff);
+    CHECK(pixels[24 * 64 + 24] == 0xffffff);
+    CHECK(pixels[8 * 64 + 8] == 0);
+
+    canvas_raster_stroke_circle(&surface, (Rect){10, 10, 20, 20}, 2, 0x1ed760);
+    CHECK(pixels[10 * 64 + 20] != 0);
+
+    Point tri[3] = {{40, 40}, {56, 40}, {48, 56}};
+    canvas_raster_path(&surface, tri, 3, true, true, 1, 0x336699);
+    CHECK(pixels[44 * 64 + 48] == 0x336699);
+}
+
 int main(void) {
     CHECK(platform_init());
     app_initialize();
@@ -1226,6 +1282,7 @@ int main(void) {
     test_collection_clicks_do_not_play();
     test_home_scrolling_and_panels();
     test_label_alignment();
+    test_controller_and_raster();
 
 #ifndef _WIN32
     test_rendering();

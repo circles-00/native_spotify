@@ -88,6 +88,11 @@ int main(void) {
     CHECK(!image_dimensions_valid(1, UINT32_MAX));
 
     Image image;
+    unsigned retry_after = 99;
+    CHECK(!artwork_fetch(NULL, &image, &retry_after));
+    CHECK(retry_after == 0 && !image.pixels);
+    CHECK(!artwork_fetch("http://i.scdn.co/image/abc", &image, &retry_after));
+    CHECK(!image.pixels);
     CHECK(!platform_image_decode(NULL, 100, &image));
     CHECK(!platform_image_decode("not an image", 12, &image));
     CHECK(!platform_image_decode("x", HTTP_BODY_LIMIT + 1, &image));

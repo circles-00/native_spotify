@@ -1,4 +1,4 @@
-#include "artwork.h"
+#include "artwork_cache.h"
 #include "artwork_store.h"
 #include "platform.h"
 #include "ui.h"
@@ -29,11 +29,9 @@ static void load_artwork(void *argument) {
         memcpy(url, store.entries[slot].url, sizeof(url));
         platform_unlock();
 
-        HttpResponse response = {0};
         Image image = {0};
-        bool ok = platform_http("GET", url, NULL, NULL, false, &response) && response.status == 200 &&
-                  platform_image_decode(response.body, response.size, &image);
-        free(response.body);
+        unsigned retry_after = 0;
+        bool ok = artwork_fetch(url, &image, &retry_after);
 
         platform_lock();
 
@@ -41,7 +39,7 @@ static void load_artwork(void *argument) {
             !strcmp(store.entries[slot].url, url)) {
             store.entries[slot].image = image;
             store.entries[slot].state = ok ? ART_READY : ART_FAILED;
-            uint64_t retry = response.retry_after > 30 ? (uint64_t)response.retry_after * 1000 : 30000;
+            uint64_t retry = retry_after > 30 ? (uint64_t)retry_after * 1000 : 30000;
             store.entries[slot].retry_ms = platform_milliseconds() + retry;
             image.pixels = NULL;
         }
@@ -57,7 +55,6 @@ void artwork_reset(unsigned session_revision) {
 
     if (revision != session_revision) {
         revision = session_revision;
-
         artwork_store_clear(&store);
     }
 
@@ -95,12 +92,12 @@ bool artwork_visit(const char *url, void (*paint)(void *, const Image *), void *
 
     bool ready = entry->state == ART_READY;
     Image image = ready ? entry->image : (Image){0};
-
     bool start = workers < 2 && entry->state == ART_PENDING;
 
     if (start) {
         ++workers;
     }
+
     platform_unlock();
 
     if (ready) {
@@ -117,7 +114,9 @@ bool artwork_visit(const char *url, void (*paint)(void *, const Image *), void *
 }
 
 static void average_color(void *context, const Image *image) {
-    uint64_t red = 0, green = 0, blue = 0;
+    uint64_t red = 0;
+    uint64_t green = 0;
+    uint64_t blue = 0;
     unsigned count = 0;
     unsigned step_x = image->width / 8 + 1;
     unsigned step_y = image->height / 8 + 1;

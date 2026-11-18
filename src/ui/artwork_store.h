@@ -3,6 +3,8 @@
 
 #include "artwork.h"
 
+#define ARTWORK_CACHE_LIMIT 64
+
 typedef enum { ART_EMPTY, ART_PENDING, ART_LOADING, ART_READY, ART_FAILED } ArtworkState;
 
 typedef struct {

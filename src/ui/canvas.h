@@ -44,7 +44,6 @@ typedef enum {
 
 typedef struct {
     void *context;
-    bool native_input;
     void (*box)(void *, Rect, float, Color);
     void (*gradient)(void *, Rect, float, Color, Color);
     void (*text)(void *, const char *, Rect, float, unsigned, Color);

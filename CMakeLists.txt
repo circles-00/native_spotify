@@ -15,20 +15,50 @@ add_library(yyjson STATIC vendor/yyjson/yyjson.c)
 target_include_directories(yyjson PUBLIC vendor/yyjson)
 target_compile_definitions(yyjson PRIVATE YYJSON_DISABLE_WRITER=1 YYJSON_DISABLE_UTILS=1)
 
-add_library(core STATIC src/core.c src/catalog.c src/collection.c src/browse.c src/browse_cache.c src/player.c src/api.c src/loopback.c src/artwork.c src/engine.c)
-target_include_directories(core PUBLIC src)
+add_library(core STATIC
+  src/core/core.c
+  src/core/catalog.c
+  src/core/collection.c
+  src/core/browse.c
+  src/core/browse_cache.c
+  src/core/player.c
+  src/core/api.c
+  src/core/artwork.c
+  src/core/engine.c
+  src/core/app.c
+  src/core/app_content.c
+  src/core/app_workers.c
+  src/platform/loopback.c
+)
+target_include_directories(core PUBLIC src src/core src/platform)
 target_compile_definitions(core PUBLIC NATIVE_SPOTIFY_CLIENT_ID="${SPOTIFY_CLIENT_ID}")
 target_link_libraries(core PUBLIC yyjson)
 
-add_library(presentation STATIC src/ui/scene.c src/ui/scene_draw.c src/ui/search_scene.c src/ui/home_scene.c src/ui/panel_scene.c src/ui/collection_scene.c src/ui/scroll.c src/ui/icons.c src/ui/artwork_cache.c src/ui/artwork_store.c)
+add_library(presentation STATIC
+  src/ui/controller.c
+  src/ui/scene.c
+  src/ui/scene_actions.c
+  src/ui/scene_input.c
+  src/ui/scene_draw.c
+  src/ui/search_scene.c
+  src/ui/home_scene.c
+  src/ui/panel_scene.c
+  src/ui/collection_scene.c
+  src/ui/scroll.c
+  src/ui/icons.c
+  src/ui/canvas_raster.c
+  src/ui/artwork_cache.c
+  src/ui/artwork_store.c
+)
+target_include_directories(presentation PUBLIC src/ui)
 target_link_libraries(presentation PUBLIC core)
 
 if(WIN32)
-  target_sources(core PRIVATE src/platform/windows.c src/platform/windows_image.c src/platform/windows_engine.c)
+  target_sources(core PRIVATE src/platform/win32_system.c src/platform/win32_image.c src/platform/win32_engine.c)
   target_compile_definitions(core PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0a00)
   target_link_libraries(core PUBLIC winhttp bcrypt advapi32 shell32 ws2_32 ole32 windowscodecs uuid)
-  set(NATIVE_UI src/ui/windows.c src/ui/windows_canvas.c)
-  add_executable(native_spotify WIN32 src/app.c ${NATIVE_UI})
+  set(NATIVE_UI src/platform/win32_window.c src/platform/win32_canvas.c)
+  add_executable(native_spotify WIN32 src/main.c ${NATIVE_UI})
   target_link_libraries(native_spotify PRIVATE presentation gdi32 user32 msimg32 dwmapi)
 
   if(ZIG_EXECUTABLE)
@@ -44,11 +74,11 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
   find_package(Threads REQUIRED)
 
-  target_sources(core PRIVATE src/platform/linux.c src/platform/linux_image.c src/platform/linux_engine.c)
+  target_sources(core PRIVATE src/platform/linux_system.c src/platform/linux_image.c src/platform/linux_engine.c)
   target_link_libraries(core PUBLIC PkgConfig::PLATFORM Threads::Threads JPEG::JPEG PNG::PNG)
 
-  set(NATIVE_UI src/ui/linux.c src/ui/linux_canvas.c)
-  add_executable(native_spotify src/main.c src/app.c ${NATIVE_UI})
+  set(NATIVE_UI src/platform/linux_window.c src/platform/linux_canvas.c)
+  add_executable(native_spotify src/main.c ${NATIVE_UI})
   target_link_libraries(native_spotify PRIVATE presentation PkgConfig::UI)
 else()
   message(FATAL_ERROR "Frontends implemented: Windows and Linux. macOS adapter is not implemented yet.")
@@ -118,7 +148,7 @@ if(BUILD_TESTING)
   add_test(NAME engine_tests COMMAND engine_tests)
   set_tests_properties(engine_tests PROPERTIES TIMEOUT 30)
 
-  add_executable(interaction_tests tests/interaction_tests.c src/app.c ${NATIVE_UI})
+  add_executable(interaction_tests tests/interaction_tests.c ${NATIVE_UI})
   target_link_libraries(interaction_tests PRIVATE presentation)
 
   if(WIN32)

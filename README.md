@@ -206,10 +206,11 @@ Selecting a queued item starts that URI; it does not implement queue reordering
 or an atomic jump to a particular queue position.
 
 Tab/Shift-Tab navigates controls; Up/Down navigates result rows. Escape closes
-open panels/popups/focus rather than quitting the app. Linux uses XIM and supports
-clipboard paste, Ctrl+A, Ctrl+U and Unicode Backspace. Its search editing is
-currently append/backspace rather than a complete cursor-editing widget.
-Windows uses a borderless native editor within the custom search pill.
+open panels/popups/focus rather than quitting the app. Both Windows and Linux
+render the search pill directly in the shared scene, supporting clipboard paste,
+Ctrl+A, Ctrl+U and Unicode Backspace (with XIM on Linux and `WM_CHAR` on
+Windows). Search editing is currently append/backspace rather than a complete
+cursor-editing widget.
 
 Browse/queue/device snapshots and the list/artwork caches stay in memory and are
 cleared on connect or disconnect. No account data is written to a disk cache.
@@ -363,23 +364,11 @@ credentials. Packagers may override the public app ID with CMake's
 ## Structure and style
 
 ```text
-src/core.*             PKCE, encoders and playback parsing
-src/catalog.*          Shared catalog metadata projection
-src/browse.*           Bounded catalog pages
-src/browse_cache.*     Session-only bounded list/page cache
-src/artwork.*          Validated Spotify image URLs and image limits
-src/player.*           Queue/devices and safe playback command builders
-src/api.*              Spotify authentication and API operations
-src/app.*              Three worker lanes, optimistic state, scroll windows; UI never receives tokens
-src/engine.*           Spotify Soloist download, update and process supervision
-src/platform/          Native HTTP, downloads, crypto, credentials, threads, processes
-src/ui/scene*          Shared modern layout, rendering and interactions
-src/ui/icons.c         Native vector icon drawing
-src/ui/artwork_cache.c Background artwork queue and bounded pixel cache
-src/ui/*_canvas.*      GDI and Cairo/Pango drawing adapters
-src/ui/windows.c       Win32 window, input and transient animation timers
-src/ui/linux.c         X11/XIM window and event-driven animation scheduling
-assets/                DM Sans font and OFL license
+src/main.c             Unified application entry point
+src/core/              Portable domain, Spotify API, Soloist engine, worker lanes, artwork fetch
+src/ui/                Portable presentation, scene layout/input/draw, controller, rasterizer, artwork cache
+src/platform/          OS adapters: Win32/Linux system, image decode, engine, loopback, window, canvas
+assets/                Fira Sans font and OFL license
 design/REFERENCES.md   Inspected Spotify desktop references
 tests/                 Parsers, interaction checks and preview tools
 vendor/yyjson/         yyjson 0.12.0, MIT license included
