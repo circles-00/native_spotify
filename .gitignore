@@ -1,3 +1,33 @@
+# Build and packaging directories
 /build*/
-__pycache__/
+/cmake-build-*/
+/dist/
+_CPack_Packages/
+
+# Generated CMake files
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+cmake_install.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+install_manifest.txt
+compile_commands.json
+
+# Native build outputs
 *.exe
+*.dll
+*.so
+*.so.*
+*.dylib
+*.a
+*.lib
+*.o
+*.obj
+*.pdb
+*.res
+/native_spotify
+/native-spotify-*.zip
+/native-spotify-*.tar.gz
+
+__pycache__/
