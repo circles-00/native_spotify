@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
@@ -137,7 +138,8 @@ private fun SheetAction(icon: ImageVector, label: String, enabled: Boolean = tru
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun TrackActions(track: Item, dismiss: () -> Unit, addToQueue: () -> Unit, toggleLiked: () -> Unit,
-                          startMix: () -> Unit, openAlbum: (() -> Unit)?, openArtist: (() -> Unit)?, share: () -> Unit) {
+                          startMix: () -> Unit, openAlbum: (() -> Unit)?, openArtist: (() -> Unit)?,
+                          sleepTimer: () -> Unit, share: () -> Unit) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
 
@@ -169,6 +171,7 @@ internal fun TrackActions(track: Item, dismiss: () -> Unit, addToQueue: () -> Un
             openAlbum?.let { SheetAction(Icons.Filled.Album, "Go to album") { run(it) } }
             openArtist?.let { SheetAction(Icons.Filled.Person, "Go to artist") { run(it) } }
 
+            SheetAction(Icons.Filled.Timer, "Sleep timer") { run(sleepTimer) }
             SheetAction(Icons.Filled.Share, "Share Spotify link") { run(share) }
         }
     }

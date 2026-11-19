@@ -101,6 +101,7 @@ typedef struct {
     unsigned session_revision;
     unsigned playback_revision;
     bool changing_track;
+    bool seeking;
     unsigned devices_revision;
     bool authenticated;
     uint64_t playback_received_ms;

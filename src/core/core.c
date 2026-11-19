@@ -406,6 +406,11 @@ bool playback_parse(const char *json, Playback *playback) {
             playback->position_known = true;
         }
 
+        yyjson_val *anchor = yyjson_obj_get(root, "soloist_position");
+        playback->anchor_timestamp_ms = yyjson_get_uint(yyjson_obj_get(anchor, "timestamp_ms"));
+        playback->anchor_position_ms = (unsigned)yyjson_get_uint(yyjson_obj_get(anchor, "position_ms"));
+        playback->buffering = yyjson_is_true(yyjson_obj_get(root, "soloist_buffering"));
+
         playback->seeking_disallowed = yyjson_is_true(
             yyjson_obj_get(yyjson_obj_get(yyjson_obj_get(root, "actions"), "disallows"), "seeking"));
         yyjson_val *disallows = yyjson_obj_get(yyjson_obj_get(root, "actions"), "disallows");

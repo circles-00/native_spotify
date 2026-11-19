@@ -52,6 +52,9 @@ typedef struct {
     bool resuming_disallowed;
     bool skipping_next_disallowed;
     bool skipping_previous_disallowed;
+    bool buffering;
+    unsigned anchor_position_ms;
+    uint64_t anchor_timestamp_ms;
 } Playback;
 
 bool base64url(const unsigned char *data, size_t size, char *out, size_t capacity);

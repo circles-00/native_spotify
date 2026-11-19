@@ -283,7 +283,7 @@ unsigned player_position(const Playback *playback, uint64_t elapsed_ms) {
 }
 
 void player_seek_requested(PlayerSeek *seek, unsigned sequence, uint64_t now_ms) {
-    *seek = (PlayerSeek){true, sequence, now_ms + 30000};
+    *seek = (PlayerSeek){.pending = true, .sequence = sequence, .deadline_ms = now_ms + 30000};
 }
 
 void player_seek_completed(PlayerSeek *seek, unsigned sequence, uint64_t now_ms, bool accepted) {
@@ -292,7 +292,19 @@ void player_seek_completed(PlayerSeek *seek, unsigned sequence, uint64_t now_ms,
     }
 
     seek->pending = accepted;
-    seek->deadline_ms = now_ms + 5000;
+    seek->deadline_ms = now_ms + (seek->local ? 2500 : 5000);
+}
+
+uint64_t player_local_seek_due(uint64_t last_dispatch_ms, bool queued, uint64_t now_ms) {
+    const uint64_t spacing = 240;
+    const uint64_t quiet = 90;
+
+    if (!queued && (!last_dispatch_ms || now_ms >= last_dispatch_ms + spacing)) {
+        return now_ms;
+    }
+
+    uint64_t earliest = last_dispatch_ms + spacing;
+    return earliest > now_ms + quiet ? earliest : now_ms + quiet;
 }
 
 bool player_seek_reconcile(PlayerSeek *seek, const Playback *expected, uint64_t received_ms,
@@ -327,31 +339,34 @@ bool player_seek_reconcile(PlayerSeek *seek, const Playback *expected, uint64_t 
     return true;
 }
 
-bool player_seek_reconcile_local(PlayerSeek *seek, const Playback *expected, uint64_t received_ms,
-                                 const Playback *incoming, uint64_t now_ms) {
+SeekResult player_seek_reconcile_local(PlayerSeek *seek, const Playback *expected, const Playback *incoming,
+                                       uint64_t now_ms) {
     if (!seek->pending) {
-        return true;
+        return SEEK_READY;
     }
 
-    if (now_ms >= seek->deadline_ms || strcmp(expected->uri, incoming->uri) ||
-        strcmp(expected->device_id, incoming->device_id)) {
+    if (strcmp(expected->uri, incoming->uri) || strcmp(expected->device_id, incoming->device_id)) {
         seek->pending = false;
-        return true;
+        return SEEK_READY;
     }
 
-    // Soloist's dispatch receipt is not a new position anchor. Don't apply an old sample's
-    // position or status while the seek is in flight.
-    unsigned position = player_position(expected, now_ms >= received_ms ? now_ms - received_ms : 0);
-    unsigned difference = incoming->position_ms > position ? incoming->position_ms - position
-                                                           : position - incoming->position_ms;
-    unsigned offset = incoming->position_ms > expected->position_ms ? incoming->position_ms - expected->position_ms
-                                                                    : expected->position_ms - incoming->position_ms;
-    if (!incoming->position_known || (difference > 500 && offset > 500)) {
-        return false;
+    unsigned position = incoming->anchor_position_ms;
+    unsigned offset = position > seek->target_ms ? position - seek->target_ms : seek->target_ms - position;
+
+    // Neither a dispatch receipt nor a buffering anchor confirms playback at the new position.
+    if (seek->dispatched && incoming->position_known && incoming->anchor_timestamp_ms > seek->previous_anchor_ms &&
+        !incoming->buffering && incoming->playing == expected->playing && offset <= 750 &&
+        (!incoming->playing || incoming->position_ms >= seek->target_ms)) {
+        seek->pending = false;
+        return SEEK_READY;
     }
 
-    seek->pending = false;
-    return true;
+    if (now_ms >= seek->deadline_ms) {
+        seek->pending = false;
+        return SEEK_TIMED_OUT;
+    }
+
+    return SEEK_WAITING;
 }
 
 void player_sync_requested(PlayerSync *sync, uint64_t now_ms) {

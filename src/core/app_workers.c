@@ -96,13 +96,16 @@ bool app_submit(Job job) {
     platform_lock();
 
     if (app_state.shutting_down || (job.session && job.session != app_state.view.session_revision) ||
-        (job.action == ACTION_MORE && job.browse_seq != app_state.browse_seq)) {
+        (job.action == ACTION_MORE && job.browse_seq != app_state.browse_seq) ||
+        (job.local_seek && (!app_state.seek.pending || job.seq != app_state.seek.sequence))) {
         platform_unlock();
         return false;
     }
 
     job.session = app_state.view.session_revision;
-    job.seq = app_state.command_seq;
+    if (!job.local_seek) {
+        job.seq = app_state.command_seq;
+    }
     job.browse_seq = app_state.browse_seq;
 
     if (transport(job.action) && worker->count) {
@@ -418,6 +421,15 @@ static void run_sync(Spotify *spotify, const Job *job) {
                     ((from_engine && app_state.view.changing_track && live_track && !playback.position_known &&
                       now < app_state.sync.track_until_ms) ||
                      player_sync_waiting(&app_state.sync, &playback, now));
+    SeekResult local_seek = SEEK_READY;
+
+    if (ok && fresh && !settling && app_state.seek.pending && app_state.seek.local) {
+        local_seek = player_seek_reconcile_local(&app_state.seek, &app_state.view.playback, &playback, now);
+
+        if (local_seek == SEEK_TIMED_OUT) {
+            snprintf(app_state.view.status, sizeof(app_state.view.status), "Soloist did not reach the seek position.");
+        }
+    }
 
     if (fresh && !settling && !app_state.has_deferred) {
         app_state.view.changing_track = false;
@@ -434,11 +446,9 @@ static void run_sync(Spotify *spotify, const Job *job) {
             app_state.view.playback.supports_volume = playback.supports_volume;
             ++app_state.view.playback_revision;
         }
-    } else if (ok && fresh && !settling &&
-               (from_engine ? player_seek_reconcile_local(&app_state.seek, &app_state.view.playback,
-                                                         app_state.view.playback_received_ms, &playback, now)
-                            : player_seek_reconcile(&app_state.seek, &app_state.view.playback,
-                                                    app_state.view.playback_received_ms, &playback, now))) {
+    } else if (ok && fresh && !settling && local_seek != SEEK_WAITING &&
+               (app_state.seek.local || player_seek_reconcile(&app_state.seek, &app_state.view.playback,
+                                                              app_state.view.playback_received_ms, &playback, now))) {
         if (live_track) {
             app_state.restored_pending = false;
         }
@@ -659,6 +669,22 @@ void app_run_player(Spotify *spotify, const Job *job) {
 
     platform_lock();
     Playback target = job->target;
+
+    if (job->local_seek) {
+        if (!app_state.seek.pending || job->seq != app_state.seek.sequence || app_state.view.changing_track ||
+            app_state.view.remote_selected || strcmp(target.uri, app_state.view.playback.uri) ||
+            strcmp(target.device_id, app_state.view.playback.device_id)) {
+            if (job->seq == app_state.seek.sequence) {
+                app_state.seek.pending = false;
+            }
+            platform_unlock();
+            return;
+        }
+
+        app_state.seek_sent_ms = platform_milliseconds();
+        app_state.seek.dispatched = true;
+    }
+
     bool local = !app_state.view.remote_selected && engine_ready();
     bool soloist = local && engine_has_local_playback();
     bool local_pause = job->action == ACTION_PAUSE && !target.has_device && local;
@@ -874,8 +900,12 @@ void app_run_player(Spotify *spotify, const Job *job) {
             char command[sizeof(target.uri) + sizeof("seek:")];
             snprintf(command, sizeof(command), "seek:%s", target.uri);
             EngineCommand result = local_command(spotify, &target, command, job->value, job->session);
-            accepted = result == ENGINE_COMMAND_UNAVAILABLE ? spotify_seek(spotify, &target, job->value)
-                                                            : result == ENGINE_COMMAND_ACCEPTED;
+            if (result == ENGINE_COMMAND_UNAVAILABLE && job->local_seek) {
+                snprintf(spotify->message, sizeof(spotify->message), "Soloist is not available for seeking.");
+            }
+            accepted = result == ENGINE_COMMAND_ACCEPTED ||
+                       (result == ENGINE_COMMAND_UNAVAILABLE && !job->local_seek &&
+                        spotify_seek(spotify, &target, job->value));
         }
         break;
     }
@@ -1016,8 +1046,9 @@ void app_run_player(Spotify *spotify, const Job *job) {
             player_sync_expect_playing(&app_state.sync, target.device_id, job->action == ACTION_PLAY, now);
         }
 
-        snprintf(app_state.view.status, sizeof(app_state.view.status), "%s",
-                 accepted ? "" : spotify->message);
+        if (!job->local_seek || job->seq == app_state.seek.sequence) {
+            snprintf(app_state.view.status, sizeof(app_state.view.status), "%s", accepted ? "" : spotify->message);
+        }
     }
 
     platform_unlock();

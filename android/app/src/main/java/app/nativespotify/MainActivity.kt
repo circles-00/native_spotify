@@ -223,6 +223,7 @@ class MainActivity : ComponentActivity() {
         var filter by rememberSaveable { mutableStateOf(BuildConfig.SEARCH_ALL) }
         var librarySection by rememberSaveable { mutableStateOf(LIBRARY_PLAYLISTS) }
         var selected by remember { mutableStateOf<Item?>(null) }
+        var sleepTimerOpen by rememberSaveable { mutableStateOf(false) }
         var accountMenu by remember { mutableStateOf(false) }
         var devicesOpen by remember { mutableStateOf(false) }
         val homeList = rememberLazyListState()
@@ -345,10 +346,15 @@ class MainActivity : ComponentActivity() {
                 openArtist = item.artistId.takeIf { it.isNotEmpty() }?.let { id ->
                     { openItem(itemStub(BuildConfig.ITEM_ARTIST, id, item.detail, "")) }
                 },
+                sleepTimer = { sleepTimerOpen = true },
                 share = {
                     startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
                         .putExtra(Intent.EXTRA_TEXT, "https://open.spotify.com/${kindName(item.kind)}/${item.id}"), null))
                 })
+        }
+
+        if (sleepTimerOpen) {
+            SleepTimerDialog(Core.sleepTimer) { sleepTimerOpen = false }
         }
 
         val fullScreen = screen in setOf("Now Playing", "Queue", "Lyrics")

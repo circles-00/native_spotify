@@ -26,6 +26,7 @@ typedef struct {
     uint64_t like_ticket;
     char track_ids[SONG_RADIO_LIMIT][23];
     unsigned track_count;
+    bool local_seek;
 } Job;
 
 #define LANE_CAPACITY 16
@@ -98,6 +99,9 @@ typedef struct {
     BrowseCache browse_cache;
     PlayerSync sync;
     PlayerSeek seek;
+    Job delayed_seek;
+    uint64_t seek_due_ms;
+    uint64_t seek_sent_ms;
     uint64_t next_paint_ms;
     uint64_t next_devices_ms;
     unsigned command_seq;

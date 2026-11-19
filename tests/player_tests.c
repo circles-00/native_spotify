@@ -325,36 +325,68 @@ static void test_commands_and_sync(void) {
 static void test_local_seek_confirmation(void) {
     Playback expected;
     CHECK(playback_parse(PLAYER_FIXTURE, &expected));
-    expected.position_ms = 90000;
     PlayerSeek seek = {0};
     player_seek_requested(&seek, 1, 1000);
+    seek.local = true;
+    seek.dispatched = true;
+    seek.target_ms = 90000;
+    seek.previous_anchor_ms = 100;
     player_seek_completed(&seek, 1, 1020, true);
 
     Playback incoming = expected;
     incoming.playing = false;
-    incoming.position_ms = 10000;
-    CHECK(!player_seek_reconcile_local(&seek, &expected, 1000, &incoming, 1100));
+    incoming.buffering = true;
+    incoming.position_ms = incoming.anchor_position_ms = 90000;
+    incoming.anchor_timestamp_ms = 101;
+    CHECK(player_seek_reconcile_local(&seek, &expected, &incoming, 1100) == SEEK_WAITING);
     CHECK(seek.pending);
 
     incoming = expected;
-    incoming.position_ms = 90200;
-    CHECK(player_seek_reconcile_local(&seek, &expected, 1000, &incoming, 1300));
-    CHECK(!seek.pending && incoming.position_ms == 90200);
+    incoming.position_ms = 90040;
+    incoming.anchor_position_ms = 89800;
+    incoming.anchor_timestamp_ms = 100;
+    CHECK(player_seek_reconcile_local(&seek, &expected, &incoming, 1250) == SEEK_WAITING);
+    incoming.anchor_timestamp_ms = 102;
+    incoming.position_ms = 89999;
+    CHECK(player_seek_reconcile_local(&seek, &expected, &incoming, 1299) == SEEK_WAITING);
+    incoming.position_ms = 90000;
+    CHECK(player_seek_reconcile_local(&seek, &expected, &incoming, 1300) == SEEK_READY);
+    CHECK(!seek.pending);
 
     player_seek_requested(&seek, 2, 2000);
+    seek.local = true;
+    seek.target_ms = 34000;
     expected.playing = false;
-    expected.position_ms = 34000;
     incoming = expected;
-    incoming.position_known = false;
-    CHECK(!player_seek_reconcile_local(&seek, &expected, 2000, &incoming, 2100));
-    incoming.position_known = true;
-    CHECK(player_seek_reconcile_local(&seek, &expected, 2000, &incoming, 2300));
+    incoming.anchor_timestamp_ms = 103;
+    incoming.position_ms = incoming.anchor_position_ms = 34000;
+    CHECK(player_seek_reconcile_local(&seek, &expected, &incoming, 2100) == SEEK_WAITING);
+    seek.dispatched = true;
+    CHECK(player_seek_reconcile_local(&seek, &expected, &incoming, 2300) == SEEK_READY);
     CHECK(!seek.pending && !incoming.playing && incoming.position_ms == 34000);
 
     player_seek_requested(&seek, 3, 3000);
     snprintf(incoming.uri, sizeof(incoming.uri), "spotify:track:different");
-    CHECK(player_seek_reconcile_local(&seek, &expected, 3000, &incoming, 3100));
+    CHECK(player_seek_reconcile_local(&seek, &expected, &incoming, 3100) == SEEK_READY);
     CHECK(!seek.pending);
+
+    player_seek_requested(&seek, 4, 4000);
+    seek.local = true;
+    seek.dispatched = true;
+    seek.target_ms = 180000;
+    player_seek_completed(&seek, 4, 4020, true);
+    incoming = expected;
+    incoming.anchor_timestamp_ms = 104;
+    incoming.anchor_position_ms = 170000;
+    incoming.position_ms = 180000;
+    CHECK(player_seek_reconcile_local(&seek, &expected, &incoming, 4100) == SEEK_WAITING);
+    CHECK(player_seek_reconcile_local(&seek, &expected, &incoming, 6520) == SEEK_TIMED_OUT);
+    CHECK(!seek.pending);
+
+    CHECK(player_local_seek_due(0, false, 1000) == 1000);
+    CHECK(player_local_seek_due(1000, false, 1010) == 1240);
+    CHECK(player_local_seek_due(1000, true, 1220) == 1310);
+    CHECK(player_local_seek_due(1000, false, 1500) == 1500);
 }
 
 static void test_seek_confirmation(void) {

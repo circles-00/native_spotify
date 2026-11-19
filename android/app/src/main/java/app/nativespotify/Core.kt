@@ -113,10 +113,11 @@ internal data class PlaybackInfo(
     val canPrevious: Boolean = true, val canNext: Boolean = true, val liked: Boolean = false, val revision: Int = 0,
     val receivedAt: Long = 0, val deviceId: String = "", val volume: Int = -1, val canVolume: Boolean = false,
     val changingTrack: Boolean = false,
+    val seeking: Boolean = false,
 ) {
     /** The position now, moving on from the snapshot while playing. */
     fun position(now: Long = clock()): Int {
-        val moved = if (playing && !changingTrack) (now - receivedAt).coerceAtLeast(0) else 0
+        val moved = if (playing && !changingTrack && !seeking) (now - receivedAt).coerceAtLeast(0) else 0
         return (positionMs + moved).coerceIn(0, durationMs.toLong().coerceAtLeast(0)).toInt()
     }
 
@@ -200,6 +201,7 @@ private fun JSONObject.playback(now: Long) = PlaybackInfo(
     optBoolean("canSeek"), optBoolean("canPrevious", true), optBoolean("canNext", true), optBoolean("liked"),
     optInt("revision"), now, optString("deviceId"), optInt("volume", -1), optBoolean("canVolume"),
     optBoolean("changingTrack"),
+    optBoolean("seeking"),
 )
 
 private fun JSONObject.devices(): DevicesInfo {
@@ -271,6 +273,7 @@ internal fun parseSnapshot(json: String, now: Long = clock()): CoreState {
  */
 internal object Core {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val sleepTimer = SleepTimer(scope) { action(BuildConfig.ACTION_PAUSE) }
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private val commands = Dispatchers.Default.limitedParallelism(1)
     private val wakes = Channel<Unit>(Channel.CONFLATED)
@@ -348,7 +351,10 @@ internal object Core {
     }
 
     fun connect() = send { NativeCore.connect() }
-    fun disconnect() = send { NativeCore.disconnect() }
+    fun disconnect() {
+        sleepTimer.cancel()
+        send { NativeCore.disconnect() }
+    }
     fun refresh() = send { NativeCore.refresh() }
     fun search(query: String, filter: Int) = send { NativeCore.search(query, filter) }
     fun browse(kind: Int) = send { NativeCore.browse(kind) }
@@ -383,7 +389,10 @@ internal object Core {
     fun action(action: Int) = send { NativeCore.action(action) }
     fun seek(fraction: Int) = send { NativeCore.seek(fraction.coerceIn(0, 1000)) }
     fun seekLyric(uri: String, position: Int) = send { NativeCore.seekLyric(uri, position) }
-    fun engineStop() = send { NativeCore.engineStop() }
+    fun engineStop() {
+        sleepTimer.cancel()
+        send { NativeCore.engineStop() }
+    }
     fun devicesVisible(visible: Boolean) = send { NativeCore.devicesVisible(visible) }
     fun transferTo(device: DeviceInfo) = send { NativeCore.transferTo(device.id) }
     fun transferHere() = send { NativeCore.transferHere() }

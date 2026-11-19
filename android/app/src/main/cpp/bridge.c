@@ -607,6 +607,7 @@ static void add_playback(yyjson_mut_doc *doc, yyjson_mut_val *root, const View *
     yyjson_mut_obj_add_bool(doc, object, "hasDevice", playback->has_device);
     yyjson_mut_obj_add_bool(doc, object, "canSeek", !view->changing_track && playback_can_seek(playback));
     yyjson_mut_obj_add_bool(doc, object, "changingTrack", view->changing_track);
+    yyjson_mut_obj_add_bool(doc, object, "seeking", view->seeking);
     yyjson_mut_obj_add_bool(doc, object, "canPrevious", !playback->skipping_previous_disallowed);
     yyjson_mut_obj_add_bool(doc, object, "canNext", !playback->skipping_next_disallowed);
     yyjson_mut_obj_add_bool(doc, object, "liked", view->playback_liked);

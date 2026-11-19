@@ -193,7 +193,8 @@ class PlaybackService : Service() {
             (if (playback.canPrevious) PlaybackState.ACTION_SKIP_TO_PREVIOUS else 0L) or
             (if (playback.canNext) PlaybackState.ACTION_SKIP_TO_NEXT else 0L)
         media.setPlaybackState(PlaybackState.Builder().setActions(actions)
-            .setState(status, playback.position().toLong(), if (status == PlaybackState.STATE_PLAYING) 1f else 0f).build())
+            .setState(status, playback.position().toLong(),
+                if (status == PlaybackState.STATE_PLAYING && !playback.seeking) 1f else 0f).build())
 
         if (EngineHost.running) {
             getSystemService(NotificationManager::class.java).notify(1, notification(playback))

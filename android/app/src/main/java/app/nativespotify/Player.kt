@@ -90,7 +90,7 @@ internal fun livePosition(playback: PlaybackInfo, step: Long = 500): Int {
     LaunchedEffect(playback) {
         position = playback.position()
 
-        while (playback.playing && !playback.changingTrack) {
+        while (playback.playing && !playback.changingTrack && !playback.seeking) {
             delay(step)
             position = playback.position()
         }
@@ -251,9 +251,11 @@ internal fun NowPlayingScreen(core: CoreState, back: () -> Unit, openArtist: (It
     val position = livePosition(playback, step = 150)
     var scrub by remember(playback.uri, playback.deviceId, playback.changingTrack) { mutableStateOf<Float?>(null) }
     var releasedSeek by remember(playback.uri, playback.deviceId, playback.changingTrack) { mutableStateOf<Int?>(null) }
-    LaunchedEffect(releasedSeek, playback.revision) {
+    LaunchedEffect(releasedSeek, playback.revision, playback.seeking) {
         val requested = releasedSeek ?: return@LaunchedEffect
-        if (abs(playback.positionMs - requested) <= 500) releasedSeek = null
+        if (playback.positionMs == requested || (!playback.seeking && abs(playback.positionMs - requested) <= 500)) {
+            releasedSeek = null
+        }
     }
     LaunchedEffect(releasedSeek) {
         if (releasedSeek == null) return@LaunchedEffect
@@ -320,6 +322,9 @@ internal fun NowPlayingScreen(core: CoreState, back: () -> Unit, openArtist: (It
         }
         Row(Modifier.fillMaxWidth()) {
             Text(clockText(scrub?.let { (it * duration).toInt() } ?: shown), fontSize = 12.sp, color = Palette.text.copy(alpha = 0.7f))
+            if (playback.seeking) {
+                Text("Seeking…", Modifier.padding(start = 8.dp), fontSize = 12.sp, color = Palette.muted)
+            }
             Spacer(Modifier.weight(1f))
             Text(clockText(playback.durationMs), fontSize = 12.sp, color = Palette.text.copy(alpha = 0.7f))
         }

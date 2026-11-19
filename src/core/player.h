@@ -92,14 +92,20 @@ typedef struct {
     bool pending;
     unsigned sequence;
     uint64_t deadline_ms;
+    bool local;
+    bool dispatched;
+    unsigned target_ms;
+    uint64_t previous_anchor_ms;
 } PlayerSeek;
 
 void player_seek_requested(PlayerSeek *seek, unsigned sequence, uint64_t now_ms);
 void player_seek_completed(PlayerSeek *seek, unsigned sequence, uint64_t now_ms, bool accepted);
+uint64_t player_local_seek_due(uint64_t last_dispatch_ms, bool queued, uint64_t now_ms);
 bool player_seek_reconcile(PlayerSeek *seek, const Playback *expected, uint64_t received_ms,
                            Playback *incoming, uint64_t now_ms);
-bool player_seek_reconcile_local(PlayerSeek *seek, const Playback *expected, uint64_t received_ms,
-                                 const Playback *incoming, uint64_t now_ms);
+typedef enum { SEEK_WAITING, SEEK_READY, SEEK_TIMED_OUT } SeekResult;
+SeekResult player_seek_reconcile_local(PlayerSeek *seek, const Playback *expected, const Playback *incoming,
+                                       uint64_t now_ms);
 void player_labels(const PlayerDraft *draft, const Playback *playback, char seek[96], char volume[64]);
 
 #endif

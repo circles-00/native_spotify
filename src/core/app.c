@@ -732,6 +732,8 @@ void app_reset_session(void) {
     app_state.view.profile = (ProfileInfo){0};
     app_state.sync = (PlayerSync){0};
     app_state.seek = (PlayerSeek){0};
+    app_state.seek_due_ms = 0;
+    app_state.seek_sent_ms = 0;
     app_state.has_deferred = false;
     devices_reset(&app_state.view.devices);
     ++app_state.view.devices_revision;
@@ -839,7 +841,9 @@ void app_shutdown(void) {
 void app_optimistic(const Job *job) {
     uint64_t now = platform_milliseconds();
     Playback *playback = &app_state.view.playback;
-    playback->position_ms = player_position(playback, now - app_state.view.playback_received_ms);
+    if (!app_state.seek.pending || !app_state.seek.local) {
+        playback->position_ms = player_position(playback, now - app_state.view.playback_received_ms);
+    }
 
     switch (job->action) {
     case ACTION_PLAY:
@@ -939,10 +943,17 @@ void app_optimistic(const Job *job) {
 
     if (job->action == ACTION_SEEK) {
         player_seek_requested(&app_state.seek, app_state.command_seq, now);
+        app_state.seek.local = engine_has_local_playback() && !app_state.view.remote_selected &&
+                               !app_state.restored_pending && app_state.view.engine_device_id[0] &&
+                               !strcmp(playback->device_id, app_state.view.engine_device_id);
+        app_state.seek.target_ms = job->value;
+        app_state.seek.previous_anchor_ms = playback->anchor_timestamp_ms;
     }
 
     if (job->action == ACTION_NEXT || job->action == ACTION_PREVIOUS || job->action == ACTION_PLAY_ITEM) {
         app_state.seek.pending = false;
+        app_state.seek_due_ms = 0;
+        app_state.seek_sent_ms = 0;
         app_state.view.changing_track = true;
         playback->position_ms = 0;
 
@@ -952,9 +963,27 @@ void app_optimistic(const Job *job) {
     }
 
     if (job->action == ACTION_VOLUME || job->action == ACTION_SHUFFLE || job->action == ACTION_REPEAT ||
-        job->action == ACTION_SEEK || job->action == ACTION_PLAY_ITEM) {
+        (job->action == ACTION_SEEK && !app_state.seek.local) || job->action == ACTION_PLAY_ITEM) {
         app_save_playback_locked(job->action != ACTION_SEEK);
     }
+}
+
+static bool submit_command(Job job) {
+    if (app_submit(job)) {
+        app_wake();
+        return true;
+    }
+
+    platform_lock();
+    if (job.action != ACTION_SEEK || (app_state.seek.pending && job.seq == app_state.seek.sequence)) {
+        app_state.seek.pending = false;
+        player_sync_requested(&app_state.sync, platform_milliseconds());
+        snprintf(app_state.view.status, sizeof(app_state.view.status),
+                 "Could not schedule playback control. Please try again.");
+    }
+    platform_unlock();
+    app_wake();
+    return false;
 }
 
 static bool command(Job job) {
@@ -962,7 +991,8 @@ static bool command(Job job) {
     bool ready = app_state.view.authenticated;
 
     if (job.action == ACTION_SEEK &&
-        (app_state.view.changing_track || strcmp(job.target.uri, app_state.view.playback.uri))) {
+        (app_state.view.changing_track || strcmp(job.target.uri, app_state.view.playback.uri) ||
+         strcmp(job.target.device_id, app_state.view.playback.device_id))) {
         platform_unlock();
         return false;
     }
@@ -970,6 +1000,26 @@ static bool command(Job job) {
     if (ready) {
         job.session = app_state.view.session_revision;
         app_optimistic(&job);
+
+        if (job.action == ACTION_SEEK) {
+            job.seq = app_state.seek.sequence;
+            job.local_seek = app_state.seek.local;
+
+            if (job.local_seek) {
+                uint64_t now = platform_milliseconds();
+                uint64_t due = player_local_seek_due(app_state.seek_sent_ms, app_state.seek_due_ms != 0, now);
+
+                if (due > now) {
+                    app_state.delayed_seek = job;
+                    app_state.seek_due_ms = due;
+                    platform_unlock();
+                    app_wake();
+                    return true;
+                }
+            }
+
+            app_state.seek_due_ms = 0;
+        }
     }
 
     platform_unlock();
@@ -982,19 +1032,7 @@ static bool command(Job job) {
         return false;
     }
 
-    if (app_submit(job)) {
-        app_wake();
-        return true;
-    }
-
-    platform_lock();
-    app_state.seek.pending = false;
-    player_sync_requested(&app_state.sync, platform_milliseconds());
-    snprintf(app_state.view.status, sizeof(app_state.view.status),
-             "Could not schedule playback control. Please try again.");
-    platform_unlock();
-    app_wake();
-    return false;
+    return submit_command(job);
 }
 
 void app_action(Action action) {
@@ -1163,6 +1201,12 @@ int app_tick_with_progress(bool visible, bool publish_progress) {
     }
 
     uint64_t now = platform_milliseconds();
+    Job seek_job;
+    bool send_seek = app_state.seek_due_ms && now >= app_state.seek_due_ms;
+    if (send_seek) {
+        seek_job = app_state.delayed_seek;
+        app_state.seek_due_ms = 0;
+    }
     bool poll = now >= app_state.sync.next_ms;
     bool queue = poll && app_state.view.list.loaded && app_state.view.list.request.kind == BROWSE_QUEUE &&
                  !app_state.view.list.loading;
@@ -1215,6 +1259,10 @@ int app_tick_with_progress(bool visible, bool publish_progress) {
 
     uint64_t deadline = app_state.sync.next_ms;
 
+    if (app_state.seek_due_ms && app_state.seek_due_ms < deadline) {
+        deadline = app_state.seek_due_ms;
+    }
+
     if (need_lyrics && !load_lyrics && app_state.lyrics_next_request_ms < deadline) {
         deadline = app_state.lyrics_next_request_ms;
     }
@@ -1228,6 +1276,10 @@ int app_tick_with_progress(bool visible, bool publish_progress) {
     }
 
     platform_unlock();
+
+    if (send_seek) {
+        submit_command(seek_job);
+    }
 
     if (poll) {
         app_submit((Job){.action = ACTION_SYNC});
@@ -1753,6 +1805,7 @@ void app_snapshot_into(View *out) {
 
     platform_lock();
     *out = app_state.view;
+    out->seeking = app_state.seek.pending && app_state.seek.local;
     app_compose_queue_locked(&app_state.view.queue, &out->queue,
                              app_state.queue_first > 8 ? app_state.queue_first - 8 : 0);
     unsigned first = app_state.viewport_first > 16 ? app_state.viewport_first - 16 : 0;
@@ -1819,7 +1872,7 @@ void app_snapshot_into(View *out) {
     app_request_like_status(out);
 
     uint64_t now = platform_milliseconds();
-    if (!out->changing_track) {
+    if (!out->changing_track && !out->seeking) {
         out->playback.position_ms = player_position(
             &out->playback, now >= out->playback_received_ms ? now - out->playback_received_ms : 0);
     }

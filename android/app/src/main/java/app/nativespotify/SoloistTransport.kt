@@ -239,6 +239,8 @@ internal fun soloistPlaybackJson(state: JSONObject, device: String, now: Long = 
     return JSONObject().put("is_playing", playing).put("item", media)
         .put("context", state.optJSONObject("context"))
         .put("progress_ms", progress)
+        .put("soloist_position", anchor)
+        .put("soloist_buffering", status == "buffering" || (status == "playing" && !playing))
         .put("shuffle_state", options?.optBoolean("shuffle") ?: false)
         .put("repeat_state", options?.optString("repeat") ?: "off")
         .put("device", JSONObject().put("id", device).put("name", "Native Spotify Phone")
