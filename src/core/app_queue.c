@@ -372,6 +372,44 @@ unsigned app_queue_total_locked(const Queue *spotify) {
     return app_state.up_next_count + shown;
 }
 
+/*
+ * Call with the view lock held. The song Next will play, when it is certain: the listener's own
+ * queue, then the order captured when playback started, then Spotify's queue if it was read for
+ * the song playing now. With shuffle on only the listener's queue is certain.
+ */
+const CatalogItem *app_queue_next_locked(void) {
+    const Playback *playback = &app_state.view.playback;
+
+    if (app_state.up_next_count) {
+        return &app_state.up_next[0];
+    }
+
+    if (playback->shuffle) {
+        return NULL;
+    }
+
+    unsigned next = 0;
+
+    if (order_next(&next)) {
+        return next < app_state.play_order_count ? &app_state.play_order[next] : NULL;
+    }
+
+    const Queue *queue = &app_state.view.queue;
+    const char *id = strrchr(playback->uri, ':');
+
+    if (!queue->has_current || !id || strcmp(id + 1, queue->current.id) != 0) {
+        return NULL;
+    }
+
+    for (unsigned i = 0; i < queue->count; ++i) {
+        if (spotify_row_shown(&queue->items[i])) {
+            return &queue->items[i];
+        }
+    }
+
+    return NULL;
+}
+
 /* Call with the view lock held. */
 const CatalogItem *app_queue_at_locked(const Queue *spotify, unsigned index) {
     if (index < app_state.up_next_count) {
@@ -443,7 +481,7 @@ static bool hand_off(Spotify *spotify, const Playback *target, unsigned session)
         return false;
     }
 
-    bool ok = spotify_enqueue(spotify, target, &item);
+    bool ok = app_enqueue_command(spotify, target, &item, session);
 
     platform_lock();
     app_state.handoff_inflight = false;
@@ -463,7 +501,7 @@ static bool hand_off(Spotify *spotify, const Playback *target, unsigned session)
 
 bool app_up_next_skip(Spotify *spotify, const Playback *target, unsigned session) {
     hand_off(spotify, target, session);
-    return spotify_command(spotify, target, "next");
+    return app_skip_command(spotify, target, "next", session);
 }
 
 void app_up_next_sync(Spotify *spotify, const Playback *playback, const char *previous_uri, unsigned session) {
@@ -496,7 +534,7 @@ void app_up_next_sync(Spotify *spotify, const Playback *playback, const char *pr
     platform_unlock();
 
     if (skip) {
-        spotify_command(spotify, playback, "next");
+        app_skip_command(spotify, playback, "next", session);
         return;
     }
 

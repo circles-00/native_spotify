@@ -86,9 +86,39 @@ bool engine_needs_download(bool installed, const char *stamp, int64_t now_second
     return now_seconds - installed_at >= ENGINE_REFRESH_SECONDS;
 }
 
+static EngineOptions options = {.device_name = ENGINE_DEVICE_NAME};
+
+void engine_set_options(EngineOptions value) {
+    options = value;
+
+    if (!options.device_name || !options.device_name[0]) {
+        options.device_name = ENGINE_DEVICE_NAME;
+    }
+}
+
+const char *engine_device_name(void) {
+    return options.device_name;
+}
+
+EngineCommand engine_command(const char *command, unsigned value) {
+    return options.command ? options.command(command, value) : ENGINE_COMMAND_UNAVAILABLE;
+}
+
+bool engine_playback(const char *device, Playback *out) {
+    return options.playback && options.playback(device, out);
+}
+
+bool engine_has_local_playback(void) {
+    return options.playback != NULL;
+}
+
+bool engine_starts_on_play(void) {
+    return options.start_on_play;
+}
+
 int engine_find_device(const Devices *devices) {
     for (unsigned i = 0; i < devices->count; ++i) {
-        if (!strcmp(devices->items[i].name, ENGINE_DEVICE_NAME) && devices->items[i].id[0]) {
+        if (!strcmp(devices->items[i].name, options.device_name) && devices->items[i].id[0]) {
             return (int)i;
         }
     }
@@ -149,6 +179,29 @@ static void stop_finished(void *finished) {
     platform_process_stop(finished);
 }
 
+/* Starts Soloist for the current generation and reports whether it is on its way. */
+static void start(unsigned expected, const char *path, const char *const *arguments) {
+    platform_lock();
+    bool current = expected == generation;
+    PlatformProcess *started =
+        current ? platform_process_start(path, arguments, process_exited, (void *)(uintptr_t)expected) : NULL;
+
+    if (started) {
+        process = started;
+        started_ms = platform_milliseconds();
+    }
+
+    platform_unlock();
+
+    if (current && !started) {
+        publish(expected, ENGINE_FAILED, "Could not start Spotify Soloist.");
+    }
+
+    if (started) {
+        publish(expected, ENGINE_STARTING, "Starting Spotify Soloist…");
+    }
+}
+
 static void run(void *argument) {
     unsigned expected = (unsigned)(uintptr_t)argument;
     char base[PLATFORM_PATH_CAPACITY];
@@ -157,6 +210,15 @@ static void run(void *argument) {
 
     if (!platform_secret_load(ENGINE_KEY_ACCOUNT, key, sizeof(key)) || !key[0]) {
         publish(expected, ENGINE_NEEDS_KEY, "");
+        finish();
+        return;
+    }
+
+    // A hosting platform installs Soloist itself; it only needs the key and the device name.
+    if (options.hosted) {
+        const char *arguments[] = {EXECUTABLE, "--device-name", options.device_name, "--api-key", key, NULL};
+        start(expected, EXECUTABLE, arguments);
+        platform_wipe(key, sizeof(key));
         finish();
         return;
     }
@@ -201,31 +263,11 @@ static void run(void *argument) {
         return;
     }
 
-    const char *arguments[] = {paths.executable, "--device-name", ENGINE_DEVICE_NAME, "--api-key", key,
-                               "--data-dir",     paths.data,      "--cache-dir",      paths.cache, NULL};
+    const char *arguments[] = {paths.executable, "--device-name", options.device_name, "--api-key", key,
+                               "--data-dir",     paths.data,      "--cache-dir",       paths.cache, NULL};
 
-    platform_lock();
-    bool current = expected == generation;
-    PlatformProcess *started = current ? platform_process_start(paths.executable, arguments, process_exited,
-                                                                (void *)(uintptr_t)expected)
-                                       : NULL;
-
-    if (started) {
-        process = started;
-        started_ms = platform_milliseconds();
-    }
-
-    platform_unlock();
+    start(expected, paths.executable, arguments);
     platform_wipe(key, sizeof(key));
-
-    if (current && !started) {
-        publish(expected, ENGINE_FAILED, "Could not start Spotify Soloist.");
-    }
-
-    if (started) {
-        publish(expected, ENGINE_STARTING, "Starting Spotify Soloist…");
-    }
-
     finish();
 }
 
@@ -336,9 +378,12 @@ void engine_device_seen(bool seen) {
 
     // Soloist only logs in after it is picked once from an official Spotify app.
     if (!seen && current == ENGINE_STARTING && waited) {
-        publish(expected, ENGINE_PAIRING,
-                "One-time step: open Spotify on your phone on the same Wi-Fi, tap the devices icon and "
-                "choose “" ENGINE_DEVICE_NAME "”. If it does not connect, check your Soloist key.");
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "One-time step: open Spotify on your phone, tap the devices icon and choose “%s”. If it "
+                 "does not connect, check your Soloist key.",
+                 options.device_name);
+        publish(expected, ENGINE_PAIRING, message);
     }
 }
 

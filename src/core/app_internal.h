@@ -11,7 +11,7 @@
  * Content, playback control and status reads use independent lanes.
  * Each lane has its own request state; OAuth tokens are shared under platform_token_lock().
  */
-typedef enum { LANE_PLAYER, LANE_CONTENT, LANE_STATE, LANE_LYRICS, LANE_COUNT } Lane;
+typedef enum { LANE_PLAYER, LANE_CONTENT, LANE_STATE, LANE_LYRICS, LANE_SYNC, LANE_COUNT } Lane;
 
 typedef struct {
     Action action;
@@ -69,7 +69,8 @@ typedef struct {
 } StaleHandoff;
 
 typedef struct {
-    Job jobs[LANE_CAPACITY];
+    Job *jobs;
+    unsigned capacity;
     unsigned head;
     unsigned count;
     bool running;
@@ -91,6 +92,8 @@ typedef struct {
 typedef struct {
     View view;
     Worker workers[LANE_COUNT];
+    Job worker_jobs[LANE_SYNC][LANE_CAPACITY];
+    Job sync_job;
     Tokens tokens;
     BrowseCache browse_cache;
     PlayerSync sync;
@@ -193,9 +196,12 @@ void app_append_up_next_locked(const CatalogItem *items, unsigned count);
 void app_compose_queue_locked(const Queue *spotify, Queue *out, unsigned first);
 unsigned app_queue_total_locked(const Queue *spotify);
 const CatalogItem *app_queue_at_locked(const Queue *spotify, unsigned index);
+const CatalogItem *app_queue_next_locked(void);
 void app_capture_play_order_locked(const Job *job);
 void app_follow_play_order_locked(bool append);
 bool app_up_next_skip(Spotify *spotify, const Playback *target, unsigned session);
+bool app_skip_command(Spotify *spotify, const Playback *target, const char *command, unsigned session);
+bool app_enqueue_command(Spotify *spotify, const Playback *target, const CatalogItem *item, unsigned session);
 void app_up_next_sync(Spotify *spotify, const Playback *playback, const char *previous_uri, unsigned session);
 void app_up_next_save_locked(yyjson_mut_doc *doc, yyjson_mut_val *root);
 void app_up_next_restore_locked(yyjson_val *root);

@@ -885,23 +885,23 @@ static void setup(Scene *scene, const View *view, Canvas *canvas) {
         !instructions && view->engine_message[0] ? view->engine_message : steps[view->engine];
 
     canvas->box(canvas->context, (Rect){panel.x - 4, panel.y - 4, panel.w + 8, panel.h + 8}, 16, 0x080808);
-    canvas->box(canvas->context, panel, 14, 0x282828);
+    canvas->box(canvas->context, panel, 14, DARK_SHEET);
     canvas_icon(canvas, ICON_DEVICE, (Rect){panel.x + 32, panel.y + 30, 28, 28}, GREEN);
     text(canvas, "Play on this computer", (Rect){panel.x + 72, panel.y + 28, panel.w - 130, 32}, 20, true,
          WHITE);
-    button(scene, canvas, HIT_CLOSE_SETUP, NULL, ICON_CLOSE, false, 0x282828, 18, true);
+    button(scene, canvas, HIT_CLOSE_SETUP, NULL, ICON_CLOSE, false, DARK_SHEET, 18, true);
     text(canvas, message, (Rect){panel.x + 32, panel.y + 84, panel.w - 64, 96}, 14, false, MUTED);
 
     // A rejected paste keeps the instructions visible and explains the problem underneath.
     if (instructions && view->engine_message[0]) {
         text(canvas, view->engine_message, (Rect){panel.x + 32, panel.y + 188, panel.w - 64, 48}, 13, false,
-             0xf3727f);
+             DARK_ERROR);
     }
 
     Rect key = scene->hits[HIT_SETUP_KEY].rect;
-    canvas->box(canvas->context, key, key.h / 2, color_mix(0x3a3a3a, 0x4d4d4d, scene->hover[HIT_SETUP_KEY]));
+    canvas->box(canvas->context, key, key.h / 2, color_mix(DARK_CONTROL, 0x4d4d4d, scene->hover[HIT_SETUP_KEY]));
     canvas->text(canvas->context, "Get your key", key, 14, TEXT_BOLD | TEXT_CENTER | TEXT_VCENTER, WHITE);
-    button(scene, canvas, HIT_SETUP_PASTE, "Paste key", ICON_LINK, true, 0x282828, 18, false);
+    button(scene, canvas, HIT_SETUP_PASTE, "Paste key", ICON_LINK, true, DARK_SHEET, 18, false);
 
     if (scene->hits[HIT_SETUP_FORGET].enabled) {
         canvas->text(canvas->context, "Remove key", scene->hits[HIT_SETUP_FORGET].rect, 12,
@@ -933,7 +933,7 @@ static void intro(Scene *scene, const View *view, Canvas *canvas) {
     float right = pill_x + pill_w > track.x + track.w ? track.x + track.w : pill_x + pill_w;
 
     if (right > left) {
-        canvas->box(canvas->context, (Rect){left, track.y, right - left, track.h}, 2, 0x8b5cf6);
+        canvas->box(canvas->context, (Rect){left, track.y, right - left, track.h}, 2, DARK_PROGRESS);
     }
 }
 

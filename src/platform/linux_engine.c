@@ -17,38 +17,6 @@
 
 extern char **environ;
 
-bool platform_make_dir(const char *path) {
-    char partial[PLATFORM_PATH_CAPACITY];
-
-    if (!path[0] || strlen(path) >= sizeof(partial)) {
-        return false;
-    }
-
-    snprintf(partial, sizeof(partial), "%s", path);
-
-    // Create missing parents (e.g. ~/.local/share on a fresh account); ours stay private.
-    for (char *p = partial + 1; *p; ++p) {
-        if (*p != '/') {
-            continue;
-        }
-
-        *p = 0;
-
-        if (mkdir(partial, 0700) && errno != EEXIST) {
-            return false;
-        }
-
-        *p = '/';
-    }
-
-    if (mkdir(partial, 0700) && errno != EEXIST) {
-        return false;
-    }
-
-    struct stat info;
-    return !stat(partial, &info) && S_ISDIR(info.st_mode);
-}
-
 bool platform_data_dir(char *out, size_t capacity) {
     const char *base = getenv("XDG_DATA_HOME");
     const char *home = getenv("HOME");
@@ -63,42 +31,6 @@ bool platform_data_dir(char *out, size_t capacity) {
     }
 
     return size > 0 && (size_t)size < capacity && platform_make_dir(out);
-}
-
-bool platform_file_exists(const char *path) {
-    struct stat info;
-    return !stat(path, &info) && S_ISREG(info.st_mode);
-}
-
-bool platform_read_file(const char *path, char *out, size_t capacity) {
-    int file = open(path, O_RDONLY | O_CLOEXEC);
-
-    if (file < 0) {
-        return false;
-    }
-
-    ssize_t size = read(file, out, capacity - 1);
-    close(file);
-
-    if (size < 0) {
-        return false;
-    }
-
-    out[size] = 0;
-    return true;
-}
-
-bool platform_write_file(const char *path, const char *text) {
-    int file = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-
-    if (file < 0) {
-        return false;
-    }
-
-    size_t length = strlen(text);
-    bool ok = write(file, text, length) == (ssize_t)length;
-
-    return close(file) == 0 && ok;
 }
 
 typedef struct {

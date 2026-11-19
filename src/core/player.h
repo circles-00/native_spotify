@@ -63,9 +63,23 @@ typedef struct {
     uint64_t next_ms;
     unsigned settling;
     unsigned failures;
+    unsigned engine_revision;
+    uint64_t transport_until_ms;
+    char transport_device[DEVICE_ID_CAPACITY];
+    bool transport_playing;
+    uint64_t track_until_ms;
+    char track_device[DEVICE_ID_CAPACITY];
+    char previous_uri[sizeof(((Playback *)0)->uri)];
+    char expected_uri[sizeof(((Playback *)0)->uri)];
+    unsigned restart_from_ms;
+    char prefetched_uri[sizeof(((Playback *)0)->uri)];
 } PlayerSync;
 
 void player_sync_requested(PlayerSync *sync, uint64_t now_ms);
+void player_sync_expect_playing(PlayerSync *sync, const char *device_id, bool playing, uint64_t now_ms);
+bool player_sync_waiting(PlayerSync *sync, const Playback *incoming, uint64_t now_ms);
+void player_sync_expect_track(PlayerSync *sync, const Playback *previous, const char *device,
+                              const char *expected_uri, bool allow_restart, uint64_t now_ms);
 void player_sync_received(PlayerSync *sync, uint64_t now_ms, bool success, bool playing,
                           uint64_t retry_at_ms);
 bool player_seek_position(const Playback *playback, unsigned fraction, unsigned *position);
@@ -84,6 +98,8 @@ void player_seek_requested(PlayerSeek *seek, unsigned sequence, uint64_t now_ms)
 void player_seek_completed(PlayerSeek *seek, unsigned sequence, uint64_t now_ms, bool accepted);
 bool player_seek_reconcile(PlayerSeek *seek, const Playback *expected, uint64_t received_ms,
                            Playback *incoming, uint64_t now_ms);
+bool player_seek_reconcile_local(PlayerSeek *seek, const Playback *expected, uint64_t received_ms,
+                                 const Playback *incoming, uint64_t now_ms);
 void player_labels(const PlayerDraft *draft, const Playback *playback, char seek[96], char volume[64]);
 
 #endif

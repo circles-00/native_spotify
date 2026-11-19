@@ -269,7 +269,7 @@ static void test_commands_and_sync(void) {
 
     PlayerSync sync = {0};
     player_sync_requested(&sync, 1000);
-    CHECK(sync.next_ms == 1400 && sync.settling == 3);
+    CHECK(sync.next_ms == 1000 && sync.settling == 3);
     player_sync_received(&sync, 1400, true, true, 0);
     CHECK(sync.next_ms == 2400 && sync.settling == 2);
     player_sync_received(&sync, 2400, true, true, 0);
@@ -290,6 +290,71 @@ static void test_commands_and_sync(void) {
     CHECK(sync.next_ms == 390000 && sync.failures == 6);
     player_sync_received(&sync, 390000, true, true, 0);
     CHECK(sync.next_ms == 395000 && sync.failures == 0);
+
+    Playback incoming = {.has_device = true, .device_id = "test-device", .playing = true};
+    player_sync_expect_playing(&sync, "test-device", false, 400000);
+    CHECK(player_sync_waiting(&sync, &incoming, 400100));
+    CHECK(!player_sync_waiting(&sync, &incoming, 401000));
+
+    player_sync_expect_playing(&sync, "test-device", false, 402000);
+    incoming.playing = false;
+    CHECK(!player_sync_waiting(&sync, &incoming, 402100));
+    incoming.playing = true;
+    CHECK(!player_sync_waiting(&sync, &incoming, 402200));
+
+    player_sync_expect_playing(&sync, "other-device", false, 403000);
+    CHECK(!player_sync_waiting(&sync, &incoming, 403100));
+
+    copy_utf8(incoming.uri, sizeof(incoming.uri), "spotify:track:old");
+    player_sync_expect_track(&sync, &incoming, "test-device", "spotify:track:new", false, 404000);
+    CHECK(player_sync_waiting(&sync, &incoming, 404100));
+    copy_utf8(incoming.uri, sizeof(incoming.uri), "spotify:track:new");
+    CHECK(!player_sync_waiting(&sync, &incoming, 404200));
+    copy_utf8(incoming.uri, sizeof(incoming.uri), "spotify:track:old");
+    CHECK(player_sync_waiting(&sync, &incoming, 404300));
+    CHECK(!player_sync_waiting(&sync, &incoming, 406200));
+
+    incoming.position_known = true;
+    incoming.position_ms = 4000;
+    player_sync_expect_track(&sync, &incoming, "test-device", "", true, 407000);
+    CHECK(player_sync_waiting(&sync, &incoming, 407100));
+    incoming.position_ms = 50;
+    CHECK(!player_sync_waiting(&sync, &incoming, 407200));
+}
+
+static void test_local_seek_confirmation(void) {
+    Playback expected;
+    CHECK(playback_parse(PLAYER_FIXTURE, &expected));
+    expected.position_ms = 90000;
+    PlayerSeek seek = {0};
+    player_seek_requested(&seek, 1, 1000);
+    player_seek_completed(&seek, 1, 1020, true);
+
+    Playback incoming = expected;
+    incoming.playing = false;
+    incoming.position_ms = 10000;
+    CHECK(!player_seek_reconcile_local(&seek, &expected, 1000, &incoming, 1100));
+    CHECK(seek.pending);
+
+    incoming = expected;
+    incoming.position_ms = 90200;
+    CHECK(player_seek_reconcile_local(&seek, &expected, 1000, &incoming, 1300));
+    CHECK(!seek.pending && incoming.position_ms == 90200);
+
+    player_seek_requested(&seek, 2, 2000);
+    expected.playing = false;
+    expected.position_ms = 34000;
+    incoming = expected;
+    incoming.position_known = false;
+    CHECK(!player_seek_reconcile_local(&seek, &expected, 2000, &incoming, 2100));
+    incoming.position_known = true;
+    CHECK(player_seek_reconcile_local(&seek, &expected, 2000, &incoming, 2300));
+    CHECK(!seek.pending && !incoming.playing && incoming.position_ms == 34000);
+
+    player_seek_requested(&seek, 3, 3000);
+    snprintf(incoming.uri, sizeof(incoming.uri), "spotify:track:different");
+    CHECK(player_seek_reconcile_local(&seek, &expected, 3000, &incoming, 3100));
+    CHECK(!seek.pending);
 }
 
 static void test_seek_confirmation(void) {
@@ -309,7 +374,7 @@ static void test_seek_confirmation(void) {
     incoming = expected;
     incoming.position_ms = 90900;
     CHECK(player_seek_reconcile(&seek, &expected, 1000, &incoming, 2000));
-    CHECK(!seek.pending && incoming.position_ms == 90900);
+    CHECK(!seek.pending && incoming.position_ms == 91000);
 
     player_seek_requested(&seek, 2, 2000);
     player_seek_requested(&seek, 3, 2100);
@@ -372,6 +437,7 @@ int main(void) {
     test_no_session_requests();
     test_commands_and_sync();
     test_seek_confirmation();
+    test_local_seek_confirmation();
     test_playback_options();
 
     printf("PASS: %u player checks (devices, queue, restrictions, transfer JSON, seek/volume URLs, drafts)\n",

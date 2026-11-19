@@ -302,12 +302,18 @@ bool player_seek_reconcile(PlayerSeek *seek, const Playback *expected, uint64_t 
     }
 
     bool same = incoming->has_device && !strcmp(expected->device_id, incoming->device_id) &&
-                !strcmp(expected->uri, incoming->uri) && !strcmp(expected->title, incoming->title);
+                !strcmp(expected->uri, incoming->uri);
     unsigned position = player_position(expected, now_ms >= received_ms ? now_ms - received_ms : 0);
     unsigned difference = incoming->position_ms > position ? incoming->position_ms - position
                                                            : position - incoming->position_ms;
 
-    if ((same && incoming->position_known && difference <= 1500) || now_ms >= seek->deadline_ms ||
+    if (same && incoming->position_known && difference <= 500) {
+        incoming->position_ms = position;
+        seek->pending = false;
+        return true;
+    }
+
+    if (now_ms >= seek->deadline_ms ||
         (incoming->has_device && !same)) {
         seek->pending = false;
         return true;
@@ -321,9 +327,83 @@ bool player_seek_reconcile(PlayerSeek *seek, const Playback *expected, uint64_t 
     return true;
 }
 
+bool player_seek_reconcile_local(PlayerSeek *seek, const Playback *expected, uint64_t received_ms,
+                                 const Playback *incoming, uint64_t now_ms) {
+    if (!seek->pending) {
+        return true;
+    }
+
+    if (now_ms >= seek->deadline_ms || strcmp(expected->uri, incoming->uri) ||
+        strcmp(expected->device_id, incoming->device_id)) {
+        seek->pending = false;
+        return true;
+    }
+
+    // Soloist's dispatch receipt is not a new position anchor. Don't apply an old sample's
+    // position or status while the seek is in flight.
+    unsigned position = player_position(expected, now_ms >= received_ms ? now_ms - received_ms : 0);
+    unsigned difference = incoming->position_ms > position ? incoming->position_ms - position
+                                                           : position - incoming->position_ms;
+    unsigned offset = incoming->position_ms > expected->position_ms ? incoming->position_ms - expected->position_ms
+                                                                    : expected->position_ms - incoming->position_ms;
+    if (!incoming->position_known || (difference > 500 && offset > 500)) {
+        return false;
+    }
+
+    seek->pending = false;
+    return true;
+}
+
 void player_sync_requested(PlayerSync *sync, uint64_t now_ms) {
     sync->settling = 3;
-    sync->next_ms = now_ms + 400;
+    sync->next_ms = now_ms;
+    sync->transport_until_ms = 0;
+}
+
+void player_sync_expect_playing(PlayerSync *sync, const char *device_id, bool playing, uint64_t now_ms) {
+    copy_utf8(sync->transport_device, sizeof(sync->transport_device), device_id);
+    sync->transport_playing = playing;
+    sync->transport_until_ms = now_ms + 1000;
+}
+
+void player_sync_expect_track(PlayerSync *sync, const Playback *previous, const char *device,
+                              const char *expected_uri, bool allow_restart, uint64_t now_ms) {
+    copy_utf8(sync->track_device, sizeof(sync->track_device), device);
+    copy_utf8(sync->previous_uri, sizeof(sync->previous_uri), previous->uri);
+    copy_utf8(sync->expected_uri, sizeof(sync->expected_uri), expected_uri);
+    sync->restart_from_ms = allow_restart ? previous->position_ms : 0;
+    sync->track_until_ms = now_ms + 2200;
+}
+
+bool player_sync_waiting(PlayerSync *sync, const Playback *incoming, uint64_t now_ms) {
+    if (now_ms < sync->track_until_ms) {
+        if (!incoming->has_device) {
+            return true;
+        }
+
+        if (strcmp(incoming->device_id, sync->track_device)) {
+            sync->track_until_ms = 0;
+        } else if (sync->expected_uri[0]) {
+            if (strcmp(incoming->uri, sync->expected_uri)) {
+                return true;
+            }
+        } else if (!incoming->uri[0] || !strcmp(incoming->uri, sync->previous_uri)) {
+            if (!incoming->position_known || sync->restart_from_ms <= incoming->position_ms ||
+                sync->restart_from_ms - incoming->position_ms < 750) {
+                return true;
+            }
+
+            sync->track_until_ms = 0;
+        }
+    }
+
+    if (now_ms < sync->transport_until_ms && incoming->has_device &&
+        !strcmp(incoming->device_id, sync->transport_device) && incoming->playing != sync->transport_playing) {
+        return true;
+    }
+
+    sync->transport_until_ms = 0;
+    return false;
 }
 
 void player_sync_received(PlayerSync *sync, uint64_t now_ms, bool success, bool playing,

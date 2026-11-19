@@ -19,9 +19,12 @@ Lane app_lane_for(Action action) {
     case ACTION_ENQUEUE:
     case ACTION_RADIO:
         return LANE_PLAYER;
-    case ACTION_DEVICES:
     case ACTION_SYNC:
+        return engine_has_local_playback() ? LANE_SYNC : LANE_STATE;
+    case ACTION_DEVICES:
     case ACTION_LIKE_STATUS:
+    case ACTION_PLAYBACK_FOLLOWUP:
+    case ACTION_SYNC_WEB:
         return LANE_STATE;
     case ACTION_LYRICS:
         return LANE_LYRICS;
@@ -53,7 +56,8 @@ static bool supersedes(Action queued, Action incoming) {
     return queued == incoming &&
            (incoming == ACTION_HOME || incoming == ACTION_QUEUE_PANEL || incoming == ACTION_SEEK ||
             incoming == ACTION_VOLUME || incoming == ACTION_SYNC || incoming == ACTION_DEVICES ||
-            incoming == ACTION_MORE || incoming == ACTION_QUEUE || incoming == ACTION_LYRICS);
+            incoming == ACTION_MORE || incoming == ACTION_QUEUE || incoming == ACTION_LYRICS ||
+            incoming == ACTION_PLAYBACK_FOLLOWUP || incoming == ACTION_SYNC_WEB);
 }
 
 static void run_job(Worker *worker, Job *job);
@@ -71,33 +75,11 @@ static void work(void *argument) {
         }
 
         Job job = worker->jobs[worker->head];
-        worker->head = (worker->head + 1) % LANE_CAPACITY;
+        worker->head = (worker->head + 1) % worker->capacity;
         --worker->count;
         worker->active = true;
         worker->action = job.action;
         platform_unlock();
-
-        if (transport(job.action)) {
-            // Give a click burst one short window to settle; never delay the button's visual update.
-            platform_sleep(100);
-            platform_lock();
-
-            if (app_state.shutting_down) {
-                worker->active = false;
-                worker->running = false;
-                platform_unlock();
-                return;
-            }
-
-            while (worker->count && same_transport(&job, &worker->jobs[worker->head])) {
-                job = worker->jobs[worker->head];
-                worker->head = (worker->head + 1) % LANE_CAPACITY;
-                --worker->count;
-                worker->action = job.action;
-            }
-
-            platform_unlock();
-        }
 
         run_job(worker, &job);
 
@@ -124,7 +106,7 @@ bool app_submit(Job job) {
     job.browse_seq = app_state.browse_seq;
 
     if (transport(job.action) && worker->count) {
-        Job *last = &worker->jobs[(worker->head + worker->count - 1) % LANE_CAPACITY];
+        Job *last = &worker->jobs[(worker->head + worker->count - 1) % worker->capacity];
 
         if (same_transport(last, &job)) {
             *last = job;
@@ -134,7 +116,7 @@ bool app_submit(Job job) {
     }
 
     for (unsigned i = 0; i < worker->count; ++i) {
-        Job *queued = &worker->jobs[(worker->head + i) % LANE_CAPACITY];
+        Job *queued = &worker->jobs[(worker->head + i) % worker->capacity];
 
         if (supersedes(queued->action, job.action)) {
             *queued = job;
@@ -143,12 +125,12 @@ bool app_submit(Job job) {
         }
     }
 
-    if (worker->count == LANE_CAPACITY) {
+    if (worker->count == worker->capacity) {
         platform_unlock();
         return false;
     }
 
-    worker->jobs[(worker->head + worker->count) % LANE_CAPACITY] = job;
+    worker->jobs[(worker->head + worker->count) % worker->capacity] = job;
     ++worker->count;
     bool start = !worker->running;
     worker->running = true;
@@ -173,7 +155,7 @@ bool app_command_pending(void) {
     }
 
     for (unsigned i = 0; i < worker->count; ++i) {
-        if (app_player_command(worker->jobs[(worker->head + i) % LANE_CAPACITY].action)) {
+        if (app_player_command(worker->jobs[(worker->head + i) % worker->capacity].action)) {
             return true;
         }
     }
@@ -186,7 +168,8 @@ static void lane_begin(Spotify *spotify) {
     platform_token_lock();
     spotify->tokens = app_state.tokens;
 
-    if (spotify->tokens.refresh[0] && spotify->tokens.expires_at <= platform_seconds() + 60) {
+    if (!engine_has_local_playback() && spotify->tokens.refresh[0] &&
+        spotify->tokens.expires_at <= platform_seconds() + 60) {
         spotify_ensure_token(spotify);
         app_state.tokens = spotify->tokens;
     }
@@ -269,7 +252,12 @@ static void session_started(Spotify *spotify, unsigned session) {
     app_submit((Job){.action = ACTION_SYNC});
     app_submit((Job){.action = ACTION_DEVICES});
     app_submit((Job){.action = ACTION_HOME});
-    engine_start();
+
+    // Desktop keeps Soloist ready from login; on-demand platforms start it with the first play.
+    if (!engine_starts_on_play()) {
+        engine_start();
+    }
+
     app_load_library(spotify, session);
 }
 
@@ -359,20 +347,81 @@ static void apply_restored_controls(Spotify *spotify, const Playback *target) {
     spotify_options(spotify, target, false, (unsigned)target->repeat);
 }
 
+enum { FOLLOW_TRACK_START = 1, FOLLOW_RADIO = 2 };
+
+static void playback_followup(Spotify *spotify, const Playback *playback, unsigned flags, unsigned session) {
+    app_up_next_sync(spotify, playback, flags & FOLLOW_TRACK_START ? "" : playback->uri, session);
+
+    if (!(flags & FOLLOW_RADIO)) {
+        return;
+    }
+
+    Queue upcoming = {0};
+
+    if (spotify_queue(spotify, &upcoming) && upcoming.count == 0) {
+        CatalogItem seed = {.kind = ITEM_TRACK, .playable = true};
+        copy_utf8(seed.id, sizeof(seed.id), playback->uri + 14);
+        copy_utf8(seed.title, sizeof(seed.title), playback->title);
+        copy_utf8(seed.detail, sizeof(seed.detail), playback->artist);
+
+        if (queue_search_radio(spotify, &seed, session)) {
+            app_up_next_sync(spotify, playback, playback->uri, session);
+        }
+    }
+}
+
 static void run_sync(Spotify *spotify, const Job *job) {
     Playback playback;
-    bool ok = spotify_playback(spotify, &playback);
+    char device[DEVICE_ID_CAPACITY] = {0};
+    platform_lock();
+    unsigned engine_revision = app_state.sync.engine_revision;
+
+    if (engine_has_local_playback() && engine_ready() && !app_state.view.remote_selected) {
+        copy_utf8(device, sizeof(device), app_state.view.engine_device_id);
+    }
+
+    platform_unlock();
+    bool from_engine = device[0] && engine_playback(device, &playback);
+
+    if (job->action == ACTION_SYNC_WEB && from_engine) {
+        return;
+    }
+
+    if (job->action == ACTION_SYNC && engine_has_local_playback() && !from_engine) {
+        // Remote discovery must not block the next event from the local socket.
+        app_submit((Job){.action = ACTION_SYNC_WEB, .session = job->session});
+        return;
+    }
+
+    bool ok = from_engine;
+
+    if (!from_engine) {
+        lane_begin(spotify);
+        ok = spotify_playback(spotify, &playback) && (!device[0] || strcmp(device, playback.device_id));
+    }
+
     uint64_t now = platform_milliseconds();
     bool check_radio = false;
+    bool fetch_upcoming = false;
+    bool applied = false;
 
     platform_lock();
     char previous_uri[sizeof(app_state.view.playback.uri)];
     copy_utf8(previous_uri, sizeof(previous_uri), app_state.view.playback.uri);
 
     // A command issued after this read started makes the read stale; keep the optimistic state.
+    bool engine_changed = engine_revision != app_state.sync.engine_revision;
     bool fresh = job->session == app_state.view.session_revision && job->seq == app_state.command_seq &&
-                 !app_command_pending();
+                 !app_command_pending() && (!device[0] || !engine_changed);
     bool live_track = ok && (playback.uri[0] != 0 || playback.playing);
+    bool settling = ok && fresh &&
+                    ((from_engine && app_state.view.changing_track && live_track && !playback.position_known &&
+                      now < app_state.sync.track_until_ms) ||
+                     player_sync_waiting(&app_state.sync, &playback, now));
+
+    if (fresh && !settling && !app_state.has_deferred) {
+        app_state.view.changing_track = false;
+    }
 
     if (ok && fresh && app_state.restored_pending && !live_track) {
         if (playback.has_device && playback.device_id[0]) {
@@ -385,17 +434,34 @@ static void run_sync(Spotify *spotify, const Job *job) {
             app_state.view.playback.supports_volume = playback.supports_volume;
             ++app_state.view.playback_revision;
         }
-    } else if (ok && fresh &&
-               player_seek_reconcile(&app_state.seek, &app_state.view.playback,
-                                     app_state.view.playback_received_ms, &playback, now)) {
+    } else if (ok && fresh && !settling &&
+               (from_engine ? player_seek_reconcile_local(&app_state.seek, &app_state.view.playback,
+                                                         app_state.view.playback_received_ms, &playback, now)
+                            : player_seek_reconcile(&app_state.seek, &app_state.view.playback,
+                                                    app_state.view.playback_received_ms, &playback, now))) {
         if (live_track) {
             app_state.restored_pending = false;
         }
 
         Playback prev = app_state.view.playback;
+
+        // Don't correct the displayed clock for subsecond jitter in a paused sample.
+        if (!from_engine && !prev.playing && !playback.playing && prev.position_known && playback.position_known &&
+            !strcmp(prev.uri, playback.uri) && !strcmp(prev.device_id, playback.device_id) &&
+            llabs((long long)prev.position_ms - playback.position_ms) < 1000) {
+            playback.position_ms = prev.position_ms;
+        }
+
+        const char *id = strrchr(playback.uri, ':');
+        if (id && strcmp(app_state.sync.prefetched_uri, playback.uri)) {
+            copy_utf8(app_state.sync.prefetched_uri, sizeof(app_state.sync.prefetched_uri), playback.uri);
+            fetch_upcoming = !app_state.view.queue.has_current || strcmp(id + 1, app_state.view.queue.current.id);
+        }
+
         app_state.view.playback = playback;
         app_state.view.playback_received_ms = now;
         ++app_state.view.playback_revision;
+        applied = true;
 
         if (playback.uri[0]) {
             bool changed = strcmp(prev.uri, playback.uri) != 0 || prev.shuffle != playback.shuffle ||
@@ -423,41 +489,45 @@ static void run_sync(Spotify *spotify, const Job *job) {
                           !strncmp(playback.uri, "spotify:track:", 14) &&
                           !strcmp(playback.uri + 14, app_state.search_radio_seed.id);
         bool near_end = playback.duration_ms > 0 && playback.position_known &&
-                        playback.duration_ms - playback.position_ms < 20000;
+                        (playback.position_ms >= playback.duration_ms ||
+                         playback.duration_ms - playback.position_ms < 20000);
         check_radio = app_state.view.settings.search_radio && playback.playing &&
                       playback.repeat == REPEAT_OFF && !strncmp(playback.uri, "spotify:track:", 14) &&
                       strcmp(playback.uri, app_state.radio_guarded_uri) != 0 && (seed_match || near_end) &&
                       !app_state.up_next_count;
     }
 
-    player_sync_received(&app_state.sync, now, ok, app_state.view.playback.playing, spotify->retry_at * 1000);
+    player_sync_received(&app_state.sync, now, ok, app_state.view.playback.playing,
+                         from_engine ? 0 : spotify->retry_at * 1000);
 
-    if (ok && (!fresh || app_state.seek.pending)) {
-        app_state.sync.next_ms = now + 300;
+    if ((ok || device[0]) && (!fresh || settling || app_state.seek.pending)) {
+        app_state.sync.next_ms = now + (from_engine ? 100 : 300);
+    }
+
+    if (job->session == app_state.view.session_revision && engine_changed) {
+        app_state.sync.next_ms = now;
     }
 
     platform_unlock();
 
-    if (ok && fresh) {
-        app_up_next_sync(spotify, &playback, previous_uri, job->session);
+    if (fetch_upcoming) {
+        app_submit((Job){.action = ACTION_QUEUE_PANEL, .session = job->session});
     }
 
-    if (!check_radio) {
-        return;
-    }
+    if (applied) {
+        unsigned flags = (strcmp(previous_uri, playback.uri) ? FOLLOW_TRACK_START : 0) |
+                         (check_radio ? FOLLOW_RADIO : 0);
 
-    Queue upcoming = {0};
-
-    if (spotify_queue(spotify, &upcoming) && upcoming.count == 0) {
-        CatalogItem seed = {.kind = ITEM_TRACK, .playable = true};
-        copy_utf8(seed.id, sizeof(seed.id), playback.uri + 14);
-        copy_utf8(seed.title, sizeof(seed.title), playback.title);
-        copy_utf8(seed.detail, sizeof(seed.detail), playback.artist);
-
-        // Near the end of the song the first pick has to reach Spotify now, not on the next poll.
-        if (queue_search_radio(spotify, &seed, job->session)) {
-            app_up_next_sync(spotify, &playback, playback.uri, job->session);
+        if (from_engine) {
+            app_submit((Job){.action = ACTION_PLAYBACK_FOLLOWUP, .target = playback, .value = flags,
+                             .session = job->session});
+        } else {
+            playback_followup(spotify, &playback, flags, job->session);
         }
+    }
+
+    if (!from_engine) {
+        lane_end(spotify);
     }
 }
 
@@ -516,9 +586,62 @@ static void run_devices(Spotify *spotify, const Job *job) {
     }
 }
 
+static EngineCommand local_command(Spotify *spotify, const Playback *target, const char *command,
+                                   unsigned value, unsigned session) {
+    platform_lock();
+    bool local = engine_has_local_playback() && target->has_device &&
+                 ((app_state.view.engine_device_id[0] && !strcmp(target->device_id, app_state.view.engine_device_id)) ||
+                  !strcmp(target->device, engine_device_name()));
+    bool ready = session == app_state.view.session_revision && engine_ready();
+    platform_unlock();
+
+    if (!local) {
+        return ENGINE_COMMAND_UNAVAILABLE;
+    }
+
+    EngineCommand result = ready ? engine_command(command, value) : ENGINE_COMMAND_UNAVAILABLE;
+
+    if (result == ENGINE_COMMAND_UNCONFIRMED) {
+        snprintf(spotify->message, sizeof(spotify->message), "Soloist did not confirm the command.");
+    } else if (result == ENGINE_COMMAND_UNAVAILABLE) {
+        snprintf(spotify->message, sizeof(spotify->message), "Soloist could not run this playback command.");
+        return ENGINE_COMMAND_REJECTED;
+    }
+
+    return result;
+}
+
+bool app_skip_command(Spotify *spotify, const Playback *target, const char *command, unsigned session) {
+    EngineCommand result = local_command(spotify, target, command, 0, session);
+    // A timed-out skip may already have run; don't send it twice.
+    return result == ENGINE_COMMAND_UNAVAILABLE ? spotify_command(spotify, target, command)
+                                                : result == ENGINE_COMMAND_ACCEPTED;
+}
+
+bool app_enqueue_command(Spotify *spotify, const Playback *target, const CatalogItem *item, unsigned session) {
+    if (item->kind == ITEM_TRACK && spotify_id_valid(item->id)) {
+        char command[64];
+        snprintf(command, sizeof(command), "enqueue:spotify:track:%s", item->id);
+        EngineCommand result = local_command(spotify, target, command, 0, session);
+
+        if (result != ENGINE_COMMAND_UNAVAILABLE) {
+            return result == ENGINE_COMMAND_ACCEPTED;
+        }
+    }
+
+    return spotify_enqueue(spotify, target, item);
+}
+
 void app_run_player(Spotify *spotify, const Job *job) {
-    if (job->action == ACTION_SYNC) {
-        run_sync(spotify, job);
+    if (job->action == ACTION_PLAYBACK_FOLLOWUP) {
+        platform_lock();
+        bool current = job->session == app_state.view.session_revision && !app_state.view.changing_track &&
+                       !strcmp(job->target.uri, app_state.view.playback.uri);
+        platform_unlock();
+
+        if (current) {
+            playback_followup(spotify, &job->target, job->value, job->session);
+        }
         return;
     }
 
@@ -537,13 +660,15 @@ void app_run_player(Spotify *spotify, const Job *job) {
     platform_lock();
     Playback target = job->target;
     bool local = !app_state.view.remote_selected && engine_ready();
+    bool soloist = local && engine_has_local_playback();
     bool local_pause = job->action == ACTION_PAUSE && !target.has_device && local;
     bool restored_now = app_state.restored_pending && job->session == app_state.view.session_revision;
     Playback restored_copy = app_state.view.playback;
     Queue restored_queue = app_state.view.queue;
 
     // New playback goes to this computer unless the listener chose a remote device.
-    if (local_pause || ((job->action == ACTION_PLAY_ITEM || job->action == ACTION_RADIO ||
+    if (local_pause || (soloist && !target.has_device && job->action == ACTION_PLAY) ||
+        ((job->action == ACTION_PLAY_ITEM || job->action == ACTION_RADIO ||
                          (job->action == ACTION_PLAY && restored_now)) &&
                         local)) {
         target = engine_target();
@@ -557,7 +682,7 @@ void app_run_player(Spotify *spotify, const Job *job) {
 
     switch (job->action) {
     case ACTION_PREVIOUS:
-        accepted = spotify_command(spotify, &target, "previous");
+        accepted = app_skip_command(spotify, &target, "previous", job->session);
         break;
     case ACTION_PLAY:
         if (restored_now && restored_copy.uri[0] && (target.has_device || local)) {
@@ -581,7 +706,7 @@ void app_run_player(Spotify *spotify, const Job *job) {
                 platform_unlock();
             }
         } else {
-            accepted = target.has_device ? spotify_command(spotify, &target, "play")
+            accepted = target.has_device ? app_skip_command(spotify, &target, "play", job->session)
                        : local           ? spotify_transfer(spotify, &engine, true)
                                          : false;
         }
@@ -596,7 +721,7 @@ void app_run_player(Spotify *spotify, const Job *job) {
             break;
         }
 
-        if (local_pause) {
+        if (local_pause && !soloist) {
             Playback current;
 
             if (spotify_playback(spotify, &current)) {
@@ -604,7 +729,7 @@ void app_run_player(Spotify *spotify, const Job *job) {
             }
         }
 
-        accepted = accepted || spotify_command(spotify, &target, "pause");
+        accepted = accepted || app_skip_command(spotify, &target, "pause", job->session);
         break;
     case ACTION_NEXT:
         if (restored_now && restored_queue.count > 0 && (target.has_device || local)) {
@@ -648,7 +773,7 @@ void app_run_player(Spotify *spotify, const Job *job) {
     case ACTION_PLAY_ITEM: {
         platform_lock();
         bool search_radio =
-            !job->track_count && job->browse.kind == BROWSE_SEARCH && job->item.kind == ITEM_TRACK &&
+            !soloist && !job->track_count && job->browse.kind == BROWSE_SEARCH && job->item.kind == ITEM_TRACK &&
             spotify_id_valid(job->item.id) && job->session == app_state.view.session_revision &&
             app_state.view.settings.search_radio &&
             (job->target.repeat == REPEAT_OFF || app_state.view.playback.repeat == REPEAT_OFF);
@@ -677,7 +802,25 @@ void app_run_player(Spotify *spotify, const Job *job) {
         } else if (radio_count > 1) {
             accepted = spotify_play_tracks(spotify, &target, (const char (*)[23])radio_ids, radio_count);
         } else {
-            accepted = spotify_play_item(spotify, &target, &job->item, &job->browse);
+            EngineCommand result = ENGINE_COMMAND_UNAVAILABLE;
+            const char *type = job->item.kind == ITEM_TRACK      ? "track"
+                               : job->item.kind == ITEM_EPISODE ? "episode"
+                               : job->item.kind == ITEM_ALBUM   ? "album"
+                               : job->item.kind == ITEM_PLAYLIST ? "playlist"
+                                                                : NULL;
+            bool offset = (job->item.kind == ITEM_TRACK || job->item.kind == ITEM_EPISODE) &&
+                          (job->browse.kind == BROWSE_ALBUM_TRACKS || job->browse.kind == BROWSE_PLAYLIST_TRACKS ||
+                           (job->browse.kind == BROWSE_SAVED_TRACKS && job->browse.owner_id[0]));
+
+            if (!offset && type && spotify_id_valid(job->item.id)) {
+                char command[64];
+                snprintf(command, sizeof(command), "play:spotify:%s:%s", type, job->item.id);
+                result = local_command(spotify, &target, command, 0, job->session);
+            }
+
+            accepted = result == ENGINE_COMMAND_UNAVAILABLE
+                           ? spotify_play_item(spotify, &target, &job->item, &job->browse)
+                           : result == ENGINE_COMMAND_ACCEPTED;
         }
 
         // If Spotify refuses the Liked Songs context, still play the chosen song.
@@ -724,19 +867,48 @@ void app_run_player(Spotify *spotify, const Job *job) {
             platform_unlock();
         }
         break;
-    case ACTION_SEEK:
-        accepted = restored_now ? true : spotify_seek(spotify, &target, job->value);
+    case ACTION_SEEK: {
+        if (restored_now) {
+            accepted = true;
+        } else {
+            char command[sizeof(target.uri) + sizeof("seek:")];
+            snprintf(command, sizeof(command), "seek:%s", target.uri);
+            EngineCommand result = local_command(spotify, &target, command, job->value, job->session);
+            accepted = result == ENGINE_COMMAND_UNAVAILABLE ? spotify_seek(spotify, &target, job->value)
+                                                            : result == ENGINE_COMMAND_ACCEPTED;
+        }
         break;
-    case ACTION_VOLUME:
-        accepted = spotify_volume(spotify, &target, job->value);
+    }
+    case ACTION_VOLUME: {
+        EngineCommand result = playback_can_volume(&target)
+                                   ? local_command(spotify, &target, "volume", job->value, job->session)
+                                   : ENGINE_COMMAND_UNAVAILABLE;
+        accepted = result == ENGINE_COMMAND_UNAVAILABLE ? spotify_volume(spotify, &target, job->value)
+                                                       : result == ENGINE_COMMAND_ACCEPTED;
 
         if (!accepted && restored_now) {
             accepted = true;
         }
         break;
+    }
     case ACTION_SHUFFLE:
-    case ACTION_REPEAT:
-        accepted = spotify_options(spotify, &target, job->action == ACTION_SHUFFLE, job->value);
+    case ACTION_REPEAT: {
+        bool shuffle = job->action == ACTION_SHUFFLE;
+        EngineCommand result = ENGINE_COMMAND_UNAVAILABLE;
+        if (shuffle) {
+            result = local_command(spotify, &target, "shuffle", job->value, job->session);
+        } else {
+            bool track = job->value == REPEAT_TRACK;
+            result = local_command(spotify, &target, track ? "repeat_context" : "repeat_track", 0,
+                                   job->session);
+            if (result == ENGINE_COMMAND_ACCEPTED) {
+                result = local_command(spotify, &target, track ? "repeat_track" : "repeat_context",
+                                       job->value != REPEAT_OFF, job->session);
+            }
+        }
+
+        accepted = result == ENGINE_COMMAND_UNAVAILABLE ? spotify_options(spotify, &target, shuffle, job->value)
+                                                       : result == ENGINE_COMMAND_ACCEPTED;
 
         if (!accepted && restored_now) {
             accepted = true;
@@ -758,6 +930,7 @@ void app_run_player(Spotify *spotify, const Job *job) {
             }
         }
         break;
+    }
     case ACTION_ENQUEUE:
         if (restored_now && spotify_id_valid(job->item.id)) {
             platform_lock();
@@ -773,7 +946,7 @@ void app_run_player(Spotify *spotify, const Job *job) {
             break;
         }
 
-        accepted = spotify_enqueue(spotify, &target, &job->item);
+        accepted = app_enqueue_command(spotify, &target, &job->item, job->session);
         break;
     case ACTION_RADIO:
         accepted = spotify_play_radio(spotify, &target, &job->item, true);
@@ -808,9 +981,6 @@ void app_run_player(Spotify *spotify, const Job *job) {
 
     platform_lock();
 
-    // Confirm with Spotify either way: success settles the state, failure reverts the optimism.
-    player_sync_requested(&app_state.sync, platform_milliseconds());
-
     if (job->action == ACTION_SEEK) {
         player_seek_completed(&app_state.seek, job->seq, platform_milliseconds(), accepted);
     }
@@ -819,6 +989,33 @@ void app_run_player(Spotify *spotify, const Job *job) {
     bool superseded = worker->count && same_transport(job, &worker->jobs[worker->head]);
 
     if (job->session == app_state.view.session_revision && !superseded) {
+        uint64_t now = platform_milliseconds();
+        player_sync_requested(&app_state.sync, now);
+
+        if (job->action == ACTION_PLAY_ITEM || job->action == ACTION_NEXT || job->action == ACTION_PREVIOUS ||
+            job->action == ACTION_TRANSFER || job->action == ACTION_RADIO) {
+            app_state.sync.track_until_ms = 0;
+
+            if (accepted && target.has_device && job->action != ACTION_TRANSFER && job->action != ACTION_RADIO) {
+                const char *expected = "";
+                const char *uri = app_state.view.playback.uri;
+
+                if (job->action == ACTION_PLAY_ITEM && job->seq == app_state.command_seq &&
+                    (job->item.kind == ITEM_TRACK || job->item.kind == ITEM_EPISODE) &&
+                    strcmp(uri, job->target.uri)) {
+                    expected = uri;
+                }
+
+                player_sync_expect_track(&app_state.sync, &job->target, target.device_id, expected,
+                                         job->action != ACTION_NEXT, now);
+            }
+        }
+
+        // A successful write can still be followed by a read of the old state.
+        if (accepted && job->seq == app_state.command_seq && transport(job->action) && target.has_device) {
+            player_sync_expect_playing(&app_state.sync, target.device_id, job->action == ACTION_PLAY, now);
+        }
+
         snprintf(app_state.view.status, sizeof(app_state.view.status), "%s",
                  accepted ? "" : spotify->message);
     }
@@ -875,7 +1072,15 @@ static void run_job(Worker *worker, Job *job) {
     bool current = job->session == app_state.view.session_revision &&
                    ((job->action != ACTION_DETAILS && job->action != ACTION_SAVE_COLLECTION) ||
                     job->browse_seq == app_state.browse_seq);
+    bool authenticated = app_state.view.authenticated;
     platform_unlock();
+
+    if (job->action == ACTION_SYNC || job->action == ACTION_SYNC_WEB) {
+        if (current && authenticated) {
+            run_sync(spotify, job);
+        }
+        return;
+    }
 
     if (!current || !app_signed_in()) {
         if (job->action == ACTION_LIKE_STATUS) {
@@ -935,6 +1140,11 @@ static void engine_changed(EngineState state, const char *message) {
     if (resume) {
         app_state.has_deferred = false;
         app_state.view.status[0] = 0;
+
+        // A move to this device waited for Soloist; its device id is known only now.
+        if (job.action == ACTION_TRANSFER) {
+            copy_utf8(job.device.id, sizeof(job.device.id), app_state.view.engine_device_id);
+        }
     }
 
     // Playback was waiting on Soloist but it needs the listener: show the setup panel.
@@ -955,6 +1165,8 @@ static void engine_changed(EngineState state, const char *message) {
 
 void app_workers_configure(void) {
     for (unsigned i = 0; i < LANE_COUNT; ++i) {
+        app_state.workers[i].jobs = i == LANE_SYNC ? &app_state.sync_job : app_state.worker_jobs[i];
+        app_state.workers[i].capacity = i == LANE_SYNC ? 1 : LANE_CAPACITY;
         snprintf(app_state.workers[i].spotify.client_id, sizeof(app_state.workers[i].spotify.client_id), "%s",
                  NATIVE_SPOTIFY_CLIENT_ID);
         app_state.workers[i].spotify.notify = login_progress;

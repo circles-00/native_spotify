@@ -31,3 +31,11 @@ compile_commands.json
 /native-spotify-*.tar.gz
 
 __pycache__/
+/android/.gradle/
+/android/build/
+/android/local.properties
+/android/app/.cxx/
+/android/app/build/
+*.apk
+*.aab
+*.jks

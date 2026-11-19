@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "track_order.h"
+
 /* Collection: every loaded row of the open list. Called with the view lock held. */
 static bool store_collection(const BrowseRequest *request, const BrowsePage *page, const CatalogItem *items,
                              bool append) {
@@ -125,35 +127,6 @@ CatalogItem *app_list_item(unsigned index) {
     return &app_state.collection[list_arranged() ? app_state.order[index] : index];
 }
 
-static int fold(int c) {
-    return c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c;
-}
-
-static int compare_text(const char *left, const char *right) {
-    while (*left && fold((unsigned char)*left) == fold((unsigned char)*right)) {
-        ++left;
-        ++right;
-    }
-
-    return fold((unsigned char)*left) - fold((unsigned char)*right);
-}
-
-static bool contains_text(const char *text, const char *needle) {
-    for (; *text; ++text) {
-        size_t i = 0;
-
-        while (needle[i] && fold((unsigned char)text[i]) == fold((unsigned char)needle[i])) {
-            ++i;
-        }
-
-        if (!needle[i]) {
-            return true;
-        }
-    }
-
-    return !needle[0];
-}
-
 static int compare_rows(const void *left, const void *right) {
     unsigned a = *(const unsigned *)left;
     unsigned b = *(const unsigned *)right;
@@ -162,11 +135,11 @@ static int compare_rows(const void *left, const void *right) {
     int result = 0;
 
     if (app_state.view.list.sort == LIST_SORT_TITLE) {
-        result = compare_text(x->title, y->title);
+        result = track_compare_text(x->title, y->title);
     }
 
     if (app_state.view.list.sort == LIST_SORT_ALBUM) {
-        result = compare_text(x->album_title, y->album_title);
+        result = track_compare_text(x->album_title, y->album_title);
     }
 
     if (app_state.view.list.sort == LIST_SORT_DURATION) {
@@ -233,8 +206,7 @@ void app_arrange_list_locked(void) {
     for (unsigned i = 0; i < total; ++i) {
         const CatalogItem *item = &app_state.collection[i];
 
-        if (contains_text(item->title, filter) || contains_text(item->detail, filter) ||
-            contains_text(item->album_title, filter)) {
+        if (track_filter_matches(item->title, item->detail, item->album_title, filter)) {
             app_state.order[count++] = i;
         }
     }

@@ -251,7 +251,18 @@ static void test_loopback(void) {
     loopback_close(listener);
 }
 
+#include "track_order.h"
+
+static void test_track_order(void) {
+    CHECK(track_compare_text("beta", "Alpha") > 0);
+    CHECK(track_compare_text("alpha", "ALPHA") == 0);
+    CHECK(track_filter_matches("Alpha", "Example Artist", "Second Album", "EXAMPLE album"));
+    CHECK(!track_filter_matches("Alpha", "Example Artist", "Second Album", "example missing"));
+    CHECK(track_filter_matches("A", "B", "C", " \t"));
+}
+
 int main(void) {
+    test_track_order();
     CHECK(platform_init());
 
     test_encoding();

@@ -40,7 +40,9 @@ typedef enum {
     ACTION_TOGGLE_LIKE,
     ACTION_LIKE_STATUS,
     ACTION_TOGGLE_PLAYBACK,
-    ACTION_LYRICS
+    ACTION_LYRICS,
+    ACTION_PLAYBACK_FOLLOWUP,
+    ACTION_SYNC_WEB
 } Action;
 
 /* Rows around the scroll position; the full collection stays in the app so snapshots stay small. */
@@ -98,6 +100,7 @@ typedef struct {
     bool loading_intro;
     unsigned session_revision;
     unsigned playback_revision;
+    bool changing_track;
     unsigned devices_revision;
     bool authenticated;
     uint64_t playback_received_ms;
@@ -154,6 +157,8 @@ bool app_list_arrangeable(BrowseKind kind);
 bool app_list_sort(ListSort sort, bool descending);
 bool app_list_filter(const char *text);
 int app_tick(bool visible);
+void app_engine_playback_changed(void);
+int app_tick_with_progress(bool visible, bool publish_progress);
 bool app_browse(BrowseKind kind, const char *query);
 bool app_search(const char *query, SearchFilter filter);
 bool app_load_more(void);
@@ -168,12 +173,14 @@ bool app_activate(void);
 bool app_open_link(void);
 bool app_select_device(int index);
 bool app_transfer(void);
+bool app_transfer_here(void);
 bool app_seek(unsigned fraction);
 bool app_seek_lyric(const char *uri, unsigned position_ms);
 bool app_volume(unsigned percent);
 bool app_engine_key(const char *text, size_t size);
 void app_engine_dashboard(void);
 void app_engine_forget(void);
+void app_engine_stop(void);
 bool app_set_search_radio(bool enabled);
 void app_snapshot_into(View *out);
 View app_snapshot(void);

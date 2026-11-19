@@ -89,7 +89,7 @@ void home_scene_layout(Scene *scene, const View *view) {
 static void cover(Canvas *canvas, const CatalogItem *item, Rect rect, Icon fallback) {
     if (!canvas_artwork(canvas, item ? item->artwork : NULL, rect, 6)) {
         if (fallback == ICON_HEART) {
-            canvas->gradient(canvas->context, rect, 6, 0x4e21dc, 0xb5e2d5);
+            canvas->gradient(canvas->context, rect, 6, DARK_LIKED_FROM, DARK_LIKED_TO);
         } else {
             canvas->box(canvas->context, rect, 6, DARK_HOVER);
         }

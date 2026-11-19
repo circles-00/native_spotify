@@ -14,8 +14,6 @@
 #include <string.h>
 #include <time.h>
 
-static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t token_mutex = PTHREAD_MUTEX_INITIALIZER;
 static const SecretSchema schema = {.name = "org.nativecontroller.Spotify",
                                     .flags = SECRET_SCHEMA_NONE,
                                     .attributes = {{"client-id", SECRET_SCHEMA_ATTRIBUTE_STRING}, {NULL, 0}}};
@@ -44,32 +42,6 @@ bool platform_sha256(const char *text, unsigned char out[32]) {
     unsigned size = 0;
 
     return EVP_Digest(text, strlen(text), out, &size, EVP_sha256(), NULL) == 1 && size == 32;
-}
-
-uint64_t platform_seconds(void) {
-    return platform_milliseconds() / 1000;
-}
-
-uint64_t platform_milliseconds(void) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-
-    return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
-}
-
-void platform_sleep(unsigned milliseconds) {
-    struct timespec delay = {(time_t)(milliseconds / 1000), (long)(milliseconds % 1000) * 1000000};
-
-    while (nanosleep(&delay, &delay) && errno == EINTR) {
-    }
-}
-
-void platform_wipe(void *data, size_t size) {
-    volatile unsigned char *p = data;
-
-    while (size--) {
-        *p++ = 0;
-    }
 }
 
 typedef struct {
@@ -233,56 +205,4 @@ bool platform_secret_delete(const char *account) {
     g_clear_error(&error);
 
     return ok;
-}
-
-typedef struct {
-    void (*function)(void *);
-    void *argument;
-} Task;
-
-static void *run_task(void *context) {
-    Task task = *(Task *)context;
-    free(context);
-
-    task.function(task.argument);
-
-    return NULL;
-}
-
-bool platform_start_thread(void (*function)(void *), void *argument) {
-    Task *task = malloc(sizeof(*task));
-
-    if (!task) {
-        return false;
-    }
-
-    *task = (Task){function, argument};
-
-    pthread_t thread;
-
-    if (pthread_create(&thread, NULL, run_task, task)) {
-        free(task);
-
-        return false;
-    }
-
-    pthread_detach(thread);
-
-    return true;
-}
-
-void platform_lock(void) {
-    pthread_mutex_lock(&mutex);
-}
-
-void platform_unlock(void) {
-    pthread_mutex_unlock(&mutex);
-}
-
-void platform_token_lock(void) {
-    pthread_mutex_lock(&token_mutex);
-}
-
-void platform_token_unlock(void) {
-    pthread_mutex_unlock(&token_mutex);
 }

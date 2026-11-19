@@ -45,6 +45,33 @@ int engine_find_device(const Devices *devices);
 
 typedef void (*EngineNotify)(EngineState state, const char *message);
 
+/*
+ * How this platform runs Soloist. The defaults are the desktop's: the core downloads Soloist,
+ * starts it with the session and finds it as ENGINE_DEVICE_NAME. A platform that installs and
+ * hosts Soloist itself (Android, through Termux) sets these before app_initialize().
+ */
+typedef enum {
+    ENGINE_COMMAND_UNAVAILABLE,
+    ENGINE_COMMAND_ACCEPTED,
+    ENGINE_COMMAND_UNCONFIRMED,
+    ENGINE_COMMAND_REJECTED
+} EngineCommand;
+
+typedef struct {
+    const char *device_name;
+    bool hosted;
+    bool start_on_play;
+    EngineCommand (*command)(const char *command, unsigned value);
+    bool (*playback)(const char *device, Playback *out);
+} EngineOptions;
+
+EngineCommand engine_command(const char *command, unsigned value);
+bool engine_playback(const char *device, Playback *out);
+bool engine_has_local_playback(void);
+void engine_set_options(EngineOptions options);
+const char *engine_device_name(void);
+bool engine_starts_on_play(void);
+
 void engine_configure(EngineNotify notify);
 void engine_start(void);
 bool engine_set_key(const char *text, size_t size);

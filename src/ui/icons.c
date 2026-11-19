@@ -1,4 +1,5 @@
 #include "canvas.h"
+#include "dark_palette.h"
 
 #include <math.h>
 
@@ -416,9 +417,9 @@ void canvas_brand_icon_pixels(unsigned size, uint32_t *argb) {
                 }
             }
 
-            unsigned rr = (unsigned)(0x7cu * (1.0f - stripe) + 255.0f * stripe + 0.5f);
-            unsigned rg = (unsigned)(0x3au * (1.0f - stripe) + 255.0f * stripe + 0.5f);
-            unsigned rb = (unsigned)(0xedu * (1.0f - stripe) + 255.0f * stripe + 0.5f);
+            unsigned rr = (unsigned)(((DARK_BRAND >> 16) & 0xffu) * (1.0f - stripe) + 255.0f * stripe + 0.5f);
+            unsigned rg = (unsigned)(((DARK_BRAND >> 8) & 0xffu) * (1.0f - stripe) + 255.0f * stripe + 0.5f);
+            unsigned rb = (unsigned)((DARK_BRAND & 0xffu) * (1.0f - stripe) + 255.0f * stripe + 0.5f);
             unsigned ra = (unsigned)(alpha * 255.0f + 0.5f);
             argb[y * size + x] = ((uint32_t)ra << 24) | ((uint32_t)rr << 16) | ((uint32_t)rg << 8) | rb;
         }
@@ -435,7 +436,7 @@ void canvas_brand_logo(Canvas *canvas, Rect rect) {
     float cy = rect.y + rect.h * 0.5f;
     float half = side * 0.46f;
     Rect circle = {cx - half, cy - half, half * 2.0f, half * 2.0f};
-    canvas->ellipse(canvas->context, circle, true, 0.0f, 0x7c3aed);
+    canvas->ellipse(canvas->context, circle, true, 0.0f, DARK_BRAND);
 
     float ca = cosf(-0.12f);
     float sa = sinf(-0.12f);

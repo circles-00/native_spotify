@@ -98,7 +98,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
   find_package(Threads REQUIRED)
 
-  target_sources(core PRIVATE src/platform/linux_system.c src/platform/linux_image.c src/platform/linux_engine.c)
+  target_sources(core PRIVATE src/platform/posix_common.c src/platform/linux_system.c src/platform/linux_image.c src/platform/linux_engine.c)
   target_link_libraries(core PUBLIC PkgConfig::PLATFORM Threads::Threads JPEG::JPEG PNG::PNG)
   target_link_libraries(presentation PUBLIC m)
 

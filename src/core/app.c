@@ -873,9 +873,29 @@ void app_optimistic(const Job *job) {
     case ACTION_REPEAT:
         playback->repeat = (RepeatMode)job->value;
         break;
-    case ACTION_NEXT:
+    case ACTION_NEXT: {
+        const CatalogItem *next = !app_state.restored_pending && !app_command_pending() && playback->has_device
+                                      ? app_queue_next_locked()
+                                      : NULL;
+
+        if (next && (next->kind == ITEM_TRACK || next->kind == ITEM_EPISODE) && spotify_id_valid(next->id)) {
+            snprintf(playback->uri, sizeof(playback->uri), "spotify:%s:%s",
+                     next->kind == ITEM_EPISODE ? "episode" : "track", next->id);
+            copy_utf8(playback->title, sizeof(playback->title), next->title);
+            copy_utf8(playback->artist, sizeof(playback->artist), next->detail);
+            copy_utf8(playback->artist_id, sizeof(playback->artist_id), next->artist_id);
+            copy_utf8(playback->album, sizeof(playback->album), next->album_title);
+            copy_utf8(playback->album_id, sizeof(playback->album_id), next->album_id);
+            snprintf(playback->artwork, sizeof(playback->artwork), "%s", next->artwork);
+            playback->duration_ms = next->duration_known ? next->duration_ms : 0;
+            playback->position_known = next->duration_known;
+            playback->position_ms = 0;
+        }
+
+        break;
+    }
     case ACTION_PREVIOUS:
-        playback->position_ms = 0;
+        // The device decides whether Previous restarts or goes back a track.
         break;
     case ACTION_PLAY_ITEM:
         copy_utf8(playback->title, sizeof(playback->title), job->item.title);
@@ -906,8 +926,8 @@ void app_optimistic(const Job *job) {
 
         playback->playing = true;
         playback->position_ms = 0;
-        playback->duration_ms = 0;
-        playback->position_known = false;
+        playback->duration_ms = job->item.duration_known ? job->item.duration_ms : 0;
+        playback->position_known = playback->duration_ms > 0;
         break;
     default:
         return;
@@ -923,6 +943,12 @@ void app_optimistic(const Job *job) {
 
     if (job->action == ACTION_NEXT || job->action == ACTION_PREVIOUS || job->action == ACTION_PLAY_ITEM) {
         app_state.seek.pending = false;
+        app_state.view.changing_track = true;
+        playback->position_ms = 0;
+
+        if (engine_has_local_playback() && !app_state.view.remote_selected) {
+            playback->playing = false;
+        }
     }
 
     if (job->action == ACTION_VOLUME || job->action == ACTION_SHUFFLE || job->action == ACTION_REPEAT ||
@@ -935,7 +961,8 @@ static bool command(Job job) {
     platform_lock();
     bool ready = app_state.view.authenticated;
 
-    if (job.action == ACTION_SEEK && strcmp(job.target.uri, app_state.view.playback.uri)) {
+    if (job.action == ACTION_SEEK &&
+        (app_state.view.changing_track || strcmp(job.target.uri, app_state.view.playback.uri))) {
         platform_unlock();
         return false;
     }
@@ -955,9 +982,8 @@ static bool command(Job job) {
         return false;
     }
 
-    app_wake();
-
     if (app_submit(job)) {
+        app_wake();
         return true;
     }
 
@@ -1018,13 +1044,29 @@ void app_action(Action action) {
     bool needs_setup = action == ACTION_PLAY && !job.target.has_device &&
                        (app_state.view.engine == ENGINE_NEEDS_KEY || app_state.view.engine == ENGINE_FAILED);
 
+    // An on-demand engine that is off starts now; the play waits for it like a deferred song.
+    bool start_engine = action == ACTION_PLAY && !job.target.has_device && !needs_setup &&
+                        app_state.view.engine == ENGINE_OFF && app_state.view.authenticated;
+
     if (needs_setup) {
         ++app_state.view.setup_revision;
+    }
+
+    if (start_engine) {
+        app_state.deferred = job;
+        app_state.has_deferred = true;
+        snprintf(app_state.view.status, sizeof(app_state.view.status), "Getting playback ready…");
     }
 
     platform_unlock();
 
     if (needs_setup) {
+        app_wake();
+        return;
+    }
+
+    if (start_engine) {
+        engine_start();
         app_wake();
         return;
     }
@@ -1095,6 +1137,24 @@ void app_lyrics_visible(bool visible) {
 }
 
 int app_tick(bool visible) {
+    return app_tick_with_progress(visible, true);
+}
+
+void app_engine_playback_changed(void) {
+    platform_lock();
+    bool ready = app_state.view.authenticated && app_state.view.engine == ENGINE_READY;
+    if (ready) {
+        ++app_state.sync.engine_revision;
+        app_state.sync.next_ms = platform_milliseconds();
+    }
+    platform_unlock();
+
+    if (ready) {
+        app_wake();
+    }
+}
+
+int app_tick_with_progress(bool visible, bool publish_progress) {
     platform_lock();
 
     if (!visible || !app_state.view.authenticated) {
@@ -1120,7 +1180,8 @@ int app_tick(bool visible) {
         copy_utf8(lyrics->uri, sizeof(lyrics->uri), track->uri);
     }
 
-    bool paint = app_state.view.playback.playing && now >= app_state.next_paint_ms;
+    bool animate = publish_progress && track->playing;
+    bool paint = animate && now >= app_state.next_paint_ms;
     bool waiting = app_state.view.engine == ENGINE_STARTING || app_state.view.engine == ENGINE_PAIRING;
     bool watch_devices = waiting || app_state.devices_visible;
     bool devices = watch_devices && now >= app_state.next_devices_ms;
@@ -1134,7 +1195,7 @@ int app_tick(bool visible) {
         app_state.next_paint_ms = now + 1000;
     }
 
-    if (app_state.lyrics_visible && track->playing && track->has_device && track->position_known &&
+    if (animate && app_state.lyrics_visible && track->has_device && track->position_known &&
         lyrics->state == LYRICS_SYNCED && lyrics_match(lyrics, track)) {
         unsigned position = player_position(track, now - app_state.view.playback_received_ms);
         unsigned next = (unsigned)(lyrics_active_line(lyrics, position) + 1);
@@ -1158,7 +1219,7 @@ int app_tick(bool visible) {
         deadline = app_state.lyrics_next_request_ms;
     }
 
-    if (app_state.view.playback.playing && app_state.next_paint_ms < deadline) {
+    if (animate && app_state.next_paint_ms < deadline) {
         deadline = app_state.next_paint_ms;
     }
 
@@ -1295,6 +1356,8 @@ static bool play_item_with(const CatalogItem *item, const BrowseRequest *browse,
         }
     }
 
+    bool start_engine = app_state.view.engine == ENGINE_OFF && app_state.view.authenticated;
+
     // Soloist is still getting ready: remember the choice and play it the moment it is.
     if (!local && !remote && preparing) {
         app_state.deferred = job;
@@ -1303,12 +1366,16 @@ static bool play_item_with(const CatalogItem *item, const BrowseRequest *browse,
         app_state.view.playback.playing = false;
         snprintf(app_state.view.status, sizeof(app_state.view.status), "%s",
                  app_state.view.engine_message[0] ? app_state.view.engine_message
-                                                  : "Getting playback ready on this computer…");
+                                                  : "Getting playback ready…");
     }
 
     platform_unlock();
 
     if (!local && !remote && preparing) {
+        if (start_engine) {
+            engine_start();
+        }
+
         app_wake();
         return true;
     }
@@ -1553,6 +1620,47 @@ bool app_transfer(void) {
     return ok && app_submit(job);
 }
 
+/*
+ * Moves playback to this app's own Soloist. An on-demand Soloist starts first and the move
+ * waits for it like a deferred play; one that needs setup asks for the setup panel.
+ */
+bool app_transfer_here(void) {
+    platform_lock();
+    Job job = {.action = ACTION_TRANSFER, .target = app_state.view.playback};
+    EngineState engine = app_state.view.engine;
+    bool ready = engine == ENGINE_READY && app_state.view.engine_device_id[0];
+    bool start = engine == ENGINE_OFF && app_state.view.authenticated;
+    bool waiting = !ready && (start || engine == ENGINE_DOWNLOADING || engine == ENGINE_STARTING ||
+                              engine == ENGINE_PAIRING);
+
+    if (ready) {
+        copy_utf8(job.device.id, sizeof(job.device.id), app_state.view.engine_device_id);
+    }
+
+    if (waiting) {
+        app_state.deferred = job;
+        app_state.has_deferred = true;
+        snprintf(app_state.view.status, sizeof(app_state.view.status), "Getting playback ready…");
+    }
+
+    if (!ready && !waiting) {
+        ++app_state.view.setup_revision;
+    }
+
+    platform_unlock();
+
+    if (ready) {
+        return app_submit(job);
+    }
+
+    if (start) {
+        engine_start();
+    }
+
+    app_wake();
+    return waiting;
+}
+
 /* Selects a device and moves playback to it in one step. */
 bool app_transfer_to(int index) {
     return app_select_device(index) && app_transfer();
@@ -1617,6 +1725,21 @@ bool app_engine_key(const char *text, size_t size) {
 
 void app_engine_dashboard(void) {
     platform_open_url(ENGINE_DASHBOARD_URL);
+}
+
+/* Stops Soloist but keeps the key; an on-demand engine starts again with the next play. */
+void app_engine_stop(void) {
+    engine_stop();
+
+    platform_lock();
+    app_state.view.engine = ENGINE_OFF;
+    app_state.view.engine_message[0] = 0;
+    app_state.view.engine_device_id[0] = 0;
+    app_state.view.changing_track = false;
+    app_state.has_deferred = false;
+    platform_unlock();
+
+    app_wake();
 }
 
 void app_engine_forget(void) {
@@ -1696,8 +1819,10 @@ void app_snapshot_into(View *out) {
     app_request_like_status(out);
 
     uint64_t now = platform_milliseconds();
-    out->playback.position_ms = player_position(
-        &out->playback, now >= out->playback_received_ms ? now - out->playback_received_ms : 0);
+    if (!out->changing_track) {
+        out->playback.position_ms = player_position(
+            &out->playback, now >= out->playback_received_ms ? now - out->playback_received_ms : 0);
+    }
 }
 
 View app_snapshot(void) {
