@@ -1,6 +1,7 @@
 #include "panel_scene.h"
 #include "dark_palette.h"
 #include "lyrics_scene.h"
+#include "skeleton.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -422,8 +423,10 @@ void panel_scene_draw(Scene *scene, const View *view, Canvas *canvas) {
                   DARK_MUTED);
         }
 
-        label(canvas, view->queue.queued ? "Next in queue" : "Next up",
-              (Rect){rect.x + 11, rect.y + 175, rect.w - 120, 20}, 12, true, DARK_TEXT);
+        const char *next_title = view->queue.loading ? "Loading recommendations…"
+                                 : view->queue.queued ? "Next in queue"
+                                                      : "Next up";
+        label(canvas, next_title, (Rect){rect.x + 11, rect.y + 175, rect.w - 24, 20}, 12, true, DARK_TEXT);
 
         Rect clear = scene->hits[HIT_QUEUE_CLEAR].rect;
 
@@ -437,6 +440,13 @@ void panel_scene_draw(Scene *scene, const View *view, Canvas *canvas) {
         float list_h = rect.h - QUEUE_LIST_TOP - QUEUE_LIST_BOTTOM;
         float top = rect.y + QUEUE_LIST_TOP;
         canvas->clip(canvas->context, (Rect){rect.x + 8, top, rect.w - 16, list_h}, 0);
+
+        if (view->queue.loading) {
+            for (unsigned i = 0; i < 5 && i * QUEUE_ROW_HEIGHT < list_h; ++i) {
+                Rect row = {rect.x, top + i * QUEUE_ROW_HEIGHT, rect.w, QUEUE_ROW_HEIGHT};
+                skeleton_row(canvas, row, 19, 32, 57);
+            }
+        }
 
         for (unsigned i = 0; i < QUEUE_VISIBLE_SLOTS && scene->panel_first + i < view->queue.total; ++i) {
             const CatalogItem *item = queue_row(&view->queue, scene->panel_first + i);
@@ -494,7 +504,7 @@ void panel_scene_draw(Scene *scene, const View *view, Canvas *canvas) {
 
         canvas->unclip(canvas->context);
 
-        if (!view->queue.total) {
+        if (!view->queue.total && !view->queue.loading) {
             label(canvas, "No upcoming tracks returned by Spotify.",
                   (Rect){rect.x + 12, top + 6, rect.w - 24, 54}, 12, false, DARK_MUTED);
         }

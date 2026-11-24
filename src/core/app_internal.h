@@ -11,7 +11,7 @@
  * Content, playback control and status reads use independent lanes.
  * Each lane has its own request state; OAuth tokens are shared under platform_token_lock().
  */
-typedef enum { LANE_PLAYER, LANE_CONTENT, LANE_STATE, LANE_LYRICS, LANE_SYNC, LANE_COUNT } Lane;
+typedef enum { LANE_PLAYER, LANE_CONTENT, LANE_STATE, LANE_LYRICS, LANE_SYNC, LANE_RADIO, LANE_COUNT } Lane;
 
 typedef struct {
     Action action;
@@ -94,6 +94,7 @@ typedef struct {
     View view;
     Worker workers[LANE_COUNT];
     Job worker_jobs[LANE_SYNC][LANE_CAPACITY];
+    Job radio_job;
     Job sync_job;
     Tokens tokens;
     BrowseCache browse_cache;

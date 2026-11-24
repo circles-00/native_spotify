@@ -78,9 +78,7 @@ JNIEXPORT jboolean JNICALL Java_app_nativespotify_NativeCore_start(JNIEnv *env, 
         // Soloist runs in Termux under its own name, installed by the setup screen. It starts with the
         // session, like on the desktop, so it is ready by the time something is played.
         engine_set_options((EngineOptions){.device_name = "Native Spotify Phone",
-                                           .hosted = true,
-                                           .command = android_engine_command,
-                                           .playback = android_engine_playback});
+                                           .hosted = true});
         app_initialize();
         app_set_wake(wake);
         app_action(ACTION_RESTORE);
@@ -322,12 +320,6 @@ JNIEXPORT jint JNICALL Java_app_nativespotify_NativeCore_tick(JNIEnv *env, jobje
     return app_tick_with_progress(visible, false);
 }
 
-JNIEXPORT void JNICALL Java_app_nativespotify_NativeCore_enginePlaybackChanged(JNIEnv *env, jobject self) {
-    (void)env;
-    (void)self;
-    app_engine_playback_changed();
-}
-
 JNIEXPORT void JNICALL Java_app_nativespotify_NativeCore_devicesVisible(JNIEnv *env, jobject self,
                                                                         jboolean visible) {
     (void)env;
@@ -377,6 +369,79 @@ JNIEXPORT void JNICALL Java_app_nativespotify_NativeCore_engineStop(JNIEnv *env,
     (void)env;
     (void)self;
     app_engine_stop();
+}
+
+JNIEXPORT jboolean JNICALL Java_app_nativespotify_NativeCore_dispatchLocalPlayback(
+    JNIEnv *env, jobject self, jint action, jstring uri, jlong request_id, jlong position_ms) {
+    (void)self;
+
+    if (action < LOCAL_PLAYBACK_PLAY || action > LOCAL_PLAYBACK_STOP || request_id <= 0 || position_ms < 0) {
+        return false;
+    }
+
+    const char *value = uri ? (*env)->GetStringUTFChars(env, uri, NULL) : NULL;
+
+    if (uri && !value) {
+        return false;
+    }
+
+    const LocalPlaybackCommand command = {
+        .action = (LocalPlaybackAction)action,
+        .uri = value,
+        .request_id = (uint64_t)request_id,
+        .position_ms = position_ms,
+    };
+    bool accepted = app_dispatch_native_playback(&command);
+
+    if (value) {
+        (*env)->ReleaseStringUTFChars(env, uri, value);
+    }
+
+    return accepted;
+}
+
+JNIEXPORT void JNICALL Java_app_nativespotify_NativeCore_setLocalPlaybackRoute(
+    JNIEnv *env, jobject self, jlong generation, jboolean enabled) {
+    (void)env;
+    (void)self;
+
+    if (generation > 0) {
+        app_set_native_playback_route((uint64_t)generation, enabled);
+    }
+}
+
+JNIEXPORT jint JNICALL Java_app_nativespotify_NativeCore_localPlaybackState(
+    JNIEnv *env, jobject self, jlong generation, jlong request_id) {
+    (void)env;
+    (void)self;
+    return app_native_playback_state((uint64_t)generation, (uint64_t)request_id);
+}
+
+JNIEXPORT jlong JNICALL Java_app_nativespotify_NativeCore_localPlaybackPosition(
+    JNIEnv *env, jobject self, jlong generation, jlong request_id) {
+    (void)env;
+    (void)self;
+    return app_native_playback_position((uint64_t)generation, (uint64_t)request_id);
+}
+
+JNIEXPORT jboolean JNICALL Java_app_nativespotify_NativeCore_localPlaybackEvent(
+    JNIEnv *env, jobject self, jlong generation, jlong request_id, jint state, jlong position_ms, jlong duration_ms) {
+    (void)env;
+    (void)self;
+
+    if (generation <= 0 || request_id <= 0 || state < LOCAL_PLAYBACK_BUFFERING || state > LOCAL_PLAYBACK_ERROR ||
+        position_ms < 0 || duration_ms < -1) {
+        return false;
+    }
+
+    const LocalPlaybackEvent event = {
+        .generation = (uint64_t)generation,
+        .request_id = (uint64_t)request_id,
+        .state = (LocalPlaybackState)state,
+        .position_ms = position_ms,
+        .duration_ms = duration_ms,
+    };
+    return app_native_playback_event(&event);
 }
 
 JNIEXPORT void JNICALL Java_app_nativespotify_NativeCore_engineExited(JNIEnv *env, jobject self, jint id,
@@ -608,6 +673,7 @@ static void add_playback(yyjson_mut_doc *doc, yyjson_mut_val *root, const View *
     yyjson_mut_obj_add_bool(doc, object, "canSeek", !view->changing_track && playback_can_seek(playback));
     yyjson_mut_obj_add_bool(doc, object, "changingTrack", view->changing_track);
     yyjson_mut_obj_add_bool(doc, object, "seeking", view->seeking);
+    yyjson_mut_obj_add_bool(doc, object, "buffering", view->playback.buffering);
     yyjson_mut_obj_add_bool(doc, object, "canPrevious", !playback->skipping_previous_disallowed);
     yyjson_mut_obj_add_bool(doc, object, "canNext", !playback->skipping_next_disallowed);
     yyjson_mut_obj_add_bool(doc, object, "liked", view->playback_liked);
@@ -640,6 +706,7 @@ static void add_queue(yyjson_mut_doc *doc, yyjson_mut_val *root, const Queue *qu
     yyjson_mut_obj_add_uint(doc, object, "first", queue->first);
     yyjson_mut_obj_add_uint(doc, object, "total", queue->total);
     yyjson_mut_obj_add_uint(doc, object, "queued", queue->queued);
+    yyjson_mut_obj_add_bool(doc, object, "loading", queue->loading);
     yyjson_mut_obj_add_bool(doc, object, "hasCurrent", queue->has_current);
 
     if (queue->has_current) {

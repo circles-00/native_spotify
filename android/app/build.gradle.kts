@@ -13,7 +13,8 @@ fun cEnum(header: String, type: String): List<String> =
         .let { Regex("typedef enum \\{([^}]*)\\} $type;").find(it)?.groupValues?.get(1) ?: error("Missing enum $type") }
         .split(',').map(String::trim).filter(String::isNotEmpty)
 val coreEnums = listOf("core/browse.h" to "BrowseKind", "core/browse.h" to "ItemKind", "core/browse.h" to "SearchFilter",
-    "core/app.h" to "ListSort", "core/app.h" to "Action", "core/engine.h" to "EngineState", "core/core.h" to "RepeatMode",
+    "core/app.h" to "ListSort", "core/app.h" to "Action", "core/engine.h" to "EngineState",
+    "core/engine.h" to "LocalPlaybackAction", "core/engine.h" to "LocalPlaybackState", "core/core.h" to "RepeatMode",
     "core/lyrics.h" to "LyricsState", "ui/canvas.h" to "Icon").map { (header, type) -> cEnum(header, type) }
 val palette = providers.fileContents(layout.projectDirectory.file("../../src/ui/dark_palette.h")).asText.get()
 
@@ -27,8 +28,10 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "app.nativespotify.Media3FixtureRunner"
         ndk { abiFilters.add("arm64-v8a") }
         buildConfigField("String", "SPOTIFY_CLIENT_ID", "\"$clientId\"")
+        buildConfigField("boolean", "MEDIA3_FIXTURE", "false")
         coreEnums.forEach { names -> names.forEachIndexed { index, name -> buildConfigField("int", name, "$index") } }
         listOf("BODY", "CHROME", "TILE", "HOVER", "SELECTED", "BORDER", "TEXT", "MUTED", "ACCENT",
             "BRAND", "PROGRESS", "ERROR", "CONTROL", "SHEET", "LIKED_FROM", "LIKED_TO").forEach { role ->
@@ -38,6 +41,13 @@ android {
         }
     }
     buildTypes {
+        if (providers.gradleProperty("media3Fixture").orNull == "true") {
+            getByName("debug") {
+                applicationIdSuffix = ".fixture"
+                buildConfigField("boolean", "MEDIA3_FIXTURE", "true")
+            }
+        }
+
         // Compose is much slower in debug builds; install this one to judge smoothness.
         // It is signed with the local debug key so it upgrades the debug install in place.
         getByName("release") {
@@ -59,6 +69,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.media3:media3-exoplayer:1.5.1")
     testImplementation("junit:junit:4.13.2")
     // Android's org.json is a stub in JVM unit tests; the snapshot parser needs the real one.
     testImplementation("org.json:json:20240303")

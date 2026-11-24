@@ -384,7 +384,7 @@ class MainActivity : ComponentActivity() {
                             image = playback.artwork,
                             playing = playback.playing,
                             progress = if (playback.durationMs > 0) position.toFloat() / playback.durationMs else 0f,
-                            changingTrack = playback.changingTrack,
+                            changingTrack = playback.loading,
                             deviceIcon = deviceIcon(device),
                             remote = remote,
                             open = { navigate("Now Playing") },

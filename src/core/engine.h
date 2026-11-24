@@ -57,6 +57,7 @@ typedef enum {
     ENGINE_COMMAND_REJECTED
 } EngineCommand;
 
+/* command and playback replace Soloist's local socket; only tests set them. */
 typedef struct {
     const char *device_name;
     bool hosted;
@@ -65,14 +66,52 @@ typedef struct {
     bool (*playback)(const char *device, Playback *out);
 } EngineOptions;
 
+/* Commands and state for this device's Soloist; unavailable means use the Web API. */
 EngineCommand engine_command(const char *command, unsigned value);
+
+typedef enum {
+    LOCAL_PLAYBACK_PLAY,
+    LOCAL_PLAYBACK_PAUSE,
+    LOCAL_PLAYBACK_RESUME,
+    LOCAL_PLAYBACK_SEEK,
+    LOCAL_PLAYBACK_STOP
+} LocalPlaybackAction;
+
+typedef struct LocalPlaybackCommand {
+    LocalPlaybackAction action;
+    const char *uri;
+    uint64_t generation;
+    uint64_t request_id;
+    int64_t position_ms;
+} LocalPlaybackCommand;
+
+typedef enum {
+    LOCAL_PLAYBACK_BUFFERING,
+    LOCAL_PLAYBACK_PLAYING,
+    LOCAL_PLAYBACK_PAUSED,
+    LOCAL_PLAYBACK_SEEKED,
+    LOCAL_PLAYBACK_ENDED,
+    LOCAL_PLAYBACK_ERROR
+} LocalPlaybackState;
+
+typedef struct {
+    uint64_t generation;
+    uint64_t request_id;
+    LocalPlaybackState state;
+    int64_t position_ms;
+    int64_t duration_ms;
+} LocalPlaybackEvent;
+
+bool engine_dispatch_local_playback(const LocalPlaybackCommand *command);
+#ifdef __ANDROID__
+bool android_dispatch_local_playback(const LocalPlaybackCommand *command);
+#endif
 bool engine_playback(const char *device, Playback *out);
-bool engine_has_local_playback(void);
 void engine_set_options(EngineOptions options);
 const char *engine_device_name(void);
 bool engine_starts_on_play(void);
 
-void engine_configure(EngineNotify notify);
+void engine_configure(EngineNotify notify, void (*playback_changed)(void));
 void engine_start(void);
 bool engine_set_key(const char *text, size_t size);
 void engine_device_seen(bool seen);

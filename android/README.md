@@ -1,6 +1,6 @@
 # Native Spotify for Android
 
-This is an ARM64 Android debug app. Soloist and Debian run on the phone inside Termux, not inside the APK or on another device. No Soloist executable or account credential is bundled.
+This is an ARM64 Android debug app. Soloist runs on the phone inside Termux, directly on Termux's glibc rather than inside PRoot; setup uses a Debian guest only to download Soloist and collect its libraries. Nothing runs inside the APK or on another device. No Soloist executable or account credential is bundled.
 
 ## Build
 
@@ -27,8 +27,21 @@ Playback uses the same C core as desktop. Soloist runs in Termux as the Spotify 
 
 ## Scope and verification
 
-Android sends play, pause, seek, skips, and other local controls directly to Soloist and uses its playback events for the phone's position and playing state. The Web API is still used for remote devices and operations the Soloist socket cannot express, such as playing a playlist at a specific track, supplying a custom track list, or restoring a saved position with its queue. The Soloist control socket is bound only to loopback on a per-session port; it has no authentication, so the port is not a security boundary against other apps on the phone.
+Playback on this phone works like desktop and like Spotifast: the shared core talks to Soloist over its loopback WebSocket (`--ws`). A long-lived connection only listens for change events; each command (play, pause, skips, seek, volume, shuffle, repeat) and each state read opens its own short connection. Starting an album, playlist or song list, queueing, and any remote device still go through the Spotify Web API, which is also the fallback whenever Soloist is not the active device. The socket is unauthenticated and bound to loopback only.
 
 Run `gradle :app:testDebugUnitTest` from `android/` for snapshot parsing, navigation, Home rules, setup decisions and queue confirmation. The core's behavior is covered by the desktop CTest suite.
+
+### Media3 generated-audio smoke test
+
+Run from `android/` with a test device connected:
+
+```sh
+gradle -Pmedia3Fixture=true :app:assembleDebug :app:assembleDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb shell am instrument -w app.nativespotify.fixture.test/app.nativespotify.Media3FixtureRunner
+```
+
+Use the fixture flag for both APKs so the test targets a separate install, `app.nativespotify.fixture`, rather than the regular app. The test generates a short WAV on-device and exercises Media3 inside `PlaybackService` via the shared C/JNI command and event boundary. It checks start, pause, seek, resume, replacement, stale events, end, and rejection of non-fixture tracks. The regular app does not activate the Media3 route. This does not test Spotify streaming, notification controls, or the sleep timer.
 
 Successful APK assembly does not prove live playback. The earlier S24 Ultra test reached PulseAudio's dummy output; the updated OpenSL ES/AAudio startup path still needs an audible test on the phone. See [the audio helper](termux/README.md) for separate diagnostics if the app reports that neither driver started.

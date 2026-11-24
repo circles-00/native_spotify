@@ -1,6 +1,7 @@
 /* Android platform adapter. POSIX services live in posix_common.c; this file covers the rest. */
 #include "android_host.h"
 #include "artwork.h"
+#include "engine.h"
 #include "platform.h"
 
 #include <pthread.h>
@@ -19,8 +20,6 @@ static jmethodID host_sha256;
 static jmethodID host_wake;
 static jmethodID host_engine_start;
 static jmethodID host_engine_stop;
-static jmethodID host_engine_command;
-static jmethodID host_engine_playback;
 static pthread_key_t attached;
 static char data_dir[PLATFORM_PATH_CAPACITY];
 
@@ -49,14 +48,11 @@ bool android_host_load(JavaVM *vm, JNIEnv *env) {
     host_secret_delete = (*env)->GetStaticMethodID(env, host, "secretDelete", "(Ljava/lang/String;)Z");
     host_sha256 = (*env)->GetStaticMethodID(env, host, "sha256", "([B)[B");
     host_wake = (*env)->GetStaticMethodID(env, host, "wake", "()V");
-    host_engine_start = (*env)->GetStaticMethodID(env, host, "engineStart", "(I[B)Z");
+    host_engine_start = (*env)->GetStaticMethodID(env, host, "engineStart", "(I[BI)Z");
     host_engine_stop = (*env)->GetStaticMethodID(env, host, "engineStop", "(I)V");
-    host_engine_command = (*env)->GetStaticMethodID(env, host, "engineCommand", "(Ljava/lang/String;I)I");
-    host_engine_playback = (*env)->GetStaticMethodID(env, host, "enginePlayback", "(Ljava/lang/String;)[B");
 
     if (!host_http || !host_open_url || !host_secret_load || !host_secret_save || !host_secret_delete ||
-        !host_sha256 || !host_wake || !host_engine_start || !host_engine_stop || !host_engine_command ||
-        !host_engine_playback) {
+        !host_sha256 || !host_wake || !host_engine_start || !host_engine_stop) {
         return false;
     }
 
@@ -367,14 +363,47 @@ static void report_exit(void *argument) {
     report.exited(report.code, report.context);
 }
 
+bool android_dispatch_local_playback(const LocalPlaybackCommand *command) {
+    JNIEnv *env = android_env();
+
+    if (!env || !host || !command) {
+        return false;
+    }
+
+    jmethodID dispatch = (*env)->GetStaticMethodID(env, host, "dispatchLocalPlayback",
+                                                  "(ILjava/lang/String;JJJ)Z");
+
+    if (failed(env) || !dispatch) {
+        return false;
+    }
+
+    jstring uri = command->uri ? (*env)->NewStringUTF(env, command->uri) : NULL;
+
+    if (failed(env) || (command->uri && !uri)) {
+        return false;
+    }
+
+    bool accepted = (*env)->CallStaticBooleanMethod(env, host, dispatch, (jint)command->action, uri,
+                                                     (jlong)command->generation, (jlong)command->request_id,
+                                                     (jlong)command->position_ms);
+    (*env)->DeleteLocalRef(env, uri);
+    return !failed(env) && accepted;
+}
+
 PlatformProcess *platform_process_start(const char *path, const char *const *arguments, ProcessExit exited,
                                         void *context) {
     (void)path;
     const char *key = NULL;
+    unsigned socket_port = 0;
 
+    // Termux starts Soloist; it needs the key and the loopback port the core will connect to.
     for (unsigned i = 0; arguments[i] && arguments[i + 1]; ++i) {
         if (!strcmp(arguments[i], "--api-key")) {
             key = arguments[i + 1];
+        }
+
+        if (!strcmp(arguments[i], "--ws")) {
+            sscanf(arguments[i + 1], "127.0.0.1:%u", &socket_port);
         }
     }
 
@@ -394,7 +423,8 @@ PlatformProcess *platform_process_start(const char *path, const char *const *arg
 
     jbyteArray secret = bytes(env, key);
     bool started =
-        secret && (*env)->CallStaticBooleanMethod(env, host, host_engine_start, process->id, secret);
+        secret && (*env)->CallStaticBooleanMethod(env, host, host_engine_start, process->id, secret,
+                                                  (jint)socket_port);
     started = !failed(env) && started;
     release_secret(env, secret);
 
@@ -425,50 +455,6 @@ void android_engine_exited(int id, int code) {
     if (report && !platform_start_thread(report_exit, report)) {
         free(report);
     }
-}
-
-EngineCommand android_engine_command(const char *command, unsigned value) {
-    JNIEnv *env = android_env();
-
-    if (!env) {
-        return ENGINE_COMMAND_UNAVAILABLE;
-    }
-
-    jstring name = (*env)->NewStringUTF(env, command);
-    jint result = name ? (*env)->CallStaticIntMethod(env, host, host_engine_command, name, (jint)value) : 0;
-    (*env)->DeleteLocalRef(env, name);
-
-    if (failed(env)) {
-        return ENGINE_COMMAND_UNCONFIRMED;
-    }
-
-    return result == 1 ? ENGINE_COMMAND_ACCEPTED
-                       : result == 2 ? ENGINE_COMMAND_UNCONFIRMED : ENGINE_COMMAND_UNAVAILABLE;
-}
-
-bool android_engine_playback(const char *device, Playback *out) {
-    JNIEnv *env = android_env();
-    if (!env) {
-        return false;
-    }
-
-    jstring id = (*env)->NewStringUTF(env, device);
-    jbyteArray bytes = id ? (*env)->CallStaticObjectMethod(env, host, host_engine_playback, id) : NULL;
-    (*env)->DeleteLocalRef(env, id);
-    if (failed(env) || !bytes) {
-        return false;
-    }
-
-    jsize size = (*env)->GetArrayLength(env, bytes);
-    char *json = size > 0 && size <= 65536 ? calloc((size_t)size + 1, 1) : NULL;
-    if (json) {
-        (*env)->GetByteArrayRegion(env, bytes, 0, size, (jbyte *)json);
-    }
-
-    (*env)->DeleteLocalRef(env, bytes);
-    bool ok = !failed(env) && json && playback_parse(json, out);
-    free(json);
-    return ok;
 }
 
 void platform_process_stop(PlatformProcess *process) {

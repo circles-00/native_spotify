@@ -12,6 +12,8 @@ typedef SOCKET NativeSocket;
 #define SOCKET_CLOSE closesocket
 #else
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -143,4 +145,88 @@ void loopback_close(Listener listener) {
     if (listener != INVALID_LISTENER) {
         SOCKET_CLOSE((NativeSocket)listener);
     }
+}
+
+Listener loopback_connect(unsigned port) {
+    NativeSocket client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+    if (client == INVALID_SOCKET) {
+        return INVALID_LISTENER;
+    }
+
+    struct sockaddr_in address = {0};
+    address.sin_family = AF_INET;
+    address.sin_port = htons((unsigned short)port);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (connect(client, (struct sockaddr *)&address, sizeof(address)) == SOCKET_ERROR) {
+        SOCKET_CLOSE(client);
+        return INVALID_LISTENER;
+    }
+
+    // Commands are tiny; don't let Nagle hold one back waiting for more.
+    int nodelay = 1;
+    setsockopt(client, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
+
+    return (Listener)client;
+}
+
+bool loopback_send(Listener socket, const void *data, size_t size) {
+    const char *bytes = data;
+
+    while (size) {
+        int count = (int)send((NativeSocket)socket, bytes, (int)size, MSG_NOSIGNAL_FLAG);
+
+        if (count <= 0) {
+            return false;
+        }
+
+        bytes += count;
+        size -= (size_t)count;
+    }
+
+    return true;
+}
+
+int loopback_receive(Listener socket, void *data, size_t capacity, unsigned timeout_ms) {
+    fd_set set;
+    FD_ZERO(&set);
+    FD_SET((NativeSocket)socket, &set);
+
+    struct timeval timeout = {(long)(timeout_ms / 1000), (long)(timeout_ms % 1000) * 1000};
+    int ready = select((int)socket + 1, &set, NULL, NULL, &timeout);
+
+    if (ready == 0) {
+        return 0;
+    }
+
+    if (ready < 0) {
+        return -1;
+    }
+
+    int count = (int)recv((NativeSocket)socket, data, (int)capacity, 0);
+
+    return count > 0 ? count : -1;
+}
+
+unsigned loopback_free_port(void) {
+    NativeSocket probe = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+    if (probe == INVALID_SOCKET) {
+        return 0;
+    }
+
+    struct sockaddr_in address = {0};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t size = sizeof(address);
+    unsigned port = 0;
+
+    if (bind(probe, (struct sockaddr *)&address, sizeof(address)) != SOCKET_ERROR &&
+        getsockname(probe, (struct sockaddr *)&address, &size) != SOCKET_ERROR) {
+        port = ntohs(address.sin_port);
+    }
+
+    SOCKET_CLOSE(probe);
+    return port;
 }

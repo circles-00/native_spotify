@@ -1005,7 +1005,7 @@ static void search_history(Scene *scene, const View *view, Canvas *canvas) {
     Rect list = {panel.x + 5, panel.y + 34, panel.w - 10, scene->search_history_scroll.viewport};
     canvas->clip(canvas->context, list, 0);
 
-    for (unsigned i = 0; i < view->search_history_count; ++i) {
+    for (unsigned i = 0; i < view->search_history_count && i < DESKTOP_SEARCH_HISTORY_LIMIT; ++i) {
         HitId id = (HitId)(HIT_HISTORY_FIRST + i);
         HitId like = (HitId)(HIT_HISTORY_LIKE_FIRST + i);
         HitId remove = (HitId)(HIT_HISTORY_REMOVE_FIRST + i);
@@ -1022,7 +1022,6 @@ static void search_history(Scene *scene, const View *view, Canvas *canvas) {
             canvas->box(canvas->context, row, 5, DARK_HOVER);
         }
 
-        artwork_pin(item->artwork);
         Rect art = scene_song_art(scene, id);
         draw_rounded_art(canvas, item->artwork, art, 4, i, false);
         canvas_song_play(canvas, art, 4, scene->hover[id], item_can_play(item));
@@ -1049,7 +1048,19 @@ static void search_history(Scene *scene, const View *view, Canvas *canvas) {
 }
 
 void scene_draw(Scene *scene, const View *view, Canvas *canvas) {
-    artwork_begin_frame();
+    const char *history_art[DESKTOP_SEARCH_HISTORY_LIMIT];
+    unsigned history_count = 0;
+
+    if (scene->search_history_open && scene->search_history_panel.w > 0) {
+        for (unsigned i = 0; i < view->search_history_count && i < DESKTOP_SEARCH_HISTORY_LIMIT; ++i) {
+            if (scene->hits[HIT_HISTORY_FIRST + i].rect.w > 0 && view->search_history[i].artwork[0]) {
+                history_art[history_count++] = view->search_history[i].artwork;
+            }
+        }
+    }
+
+    // The overlay draws last; protect its covers before background artwork can evict them.
+    artwork_begin_frame(history_art, history_count);
     artwork_pin(view->playback.artwork);
     artwork_pin(scene->collection_artwork);
     artwork_pin(view->details.item.artwork);

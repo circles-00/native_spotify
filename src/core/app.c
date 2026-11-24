@@ -943,7 +943,7 @@ void app_optimistic(const Job *job) {
 
     if (job->action == ACTION_SEEK) {
         player_seek_requested(&app_state.seek, app_state.command_seq, now);
-        app_state.seek.local = engine_has_local_playback() && !app_state.view.remote_selected &&
+        app_state.seek.local = !app_state.view.remote_selected &&
                                !app_state.restored_pending && app_state.view.engine_device_id[0] &&
                                !strcmp(playback->device_id, app_state.view.engine_device_id);
         app_state.seek.target_ms = job->value;
@@ -957,7 +957,7 @@ void app_optimistic(const Job *job) {
         app_state.view.changing_track = true;
         playback->position_ms = 0;
 
-        if (engine_has_local_playback() && !app_state.view.remote_selected) {
+        if (!app_state.view.remote_selected) {
             playback->playing = false;
         }
     }

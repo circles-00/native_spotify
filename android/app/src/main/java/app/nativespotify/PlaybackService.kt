@@ -11,8 +11,6 @@ import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.os.IBinder
-import java.net.InetAddress
-import java.net.ServerSocket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,15 +26,18 @@ import kotlinx.coroutines.launch
  * stops its Termux session. Only one session exists; its id comes from the core's adapter.
  */
 internal object EngineHost {
-    @Volatile var transport: SoloistTransport? = null
     @Volatile var running = false
         private set
     @Volatile private var current = 0
     @Volatile private var pendingKey: String? = null
+    /** The loopback port the core's Soloist client connects to. */
+    @Volatile var port = 0
+        private set
 
-    fun start(context: Context, id: Int, key: String): Boolean {
+    fun start(context: Context, id: Int, key: String, port: Int): Boolean {
         current = id
         pendingKey = key
+        this.port = port
         running = true
         val intent = Intent(context, PlaybackService::class.java).setAction(PlaybackService.START).putExtra("id", id)
 
@@ -65,8 +66,6 @@ internal object EngineHost {
         }
 
         running = false
-        transport?.close()
-        transport = null
         Termux.run(context, "stop")
         context.stopService(Intent(context, PlaybackService::class.java))
     }
@@ -78,8 +77,6 @@ internal object EngineHost {
         }
 
         running = false
-        transport?.close()
-        transport = null
         NativeCore.engineExited(id, code)
     }
 }
@@ -88,13 +85,24 @@ class PlaybackService : Service() {
     companion object {
         const val START = "start"
         const val QUIT = "quit"
+        internal const val START_FIXTURE = "start-media3-fixture"
+        internal const val FIXTURE_FILE = "media3-service-tone.wav"
+        internal const val FIXTURE_URI = "fixture:service-tone"
+        private val nextGeneration = java.util.concurrent.atomic.AtomicLong()
+        @Volatile private var local: LocalPlaybackController? = null
+
+        internal fun dispatchLocalPlayback(command: LocalPlaybackCommand): Boolean = local?.post(command) ?: false
+
+        internal fun localSession(): LocalPlaybackSession = local?.session
+            ?: throw LocalPlaybackUnavailable("No authorized playback provider is active")
+
+        internal fun localGeneration(): Long = local?.generation ?: 0L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var media: MediaSession
     private var keepalive: Job? = null
-    private var localConnection: Job? = null
-    private var localTransport: SoloistTransport? = null
+    private var localController: LocalPlaybackController? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -130,6 +138,40 @@ class PlaybackService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(1, notification(Core.state.value.playback))
 
+        if (BuildConfig.MEDIA3_FIXTURE && intent?.action == START_FIXTURE) {
+            if (localController == null) {
+                val file = java.io.File(cacheDir, FIXTURE_FILE)
+
+                if (!file.isFile) {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+
+                val source = object : AuthorizedPlaybackSource {
+                    override suspend fun signIn(context: Context) = refresh(context, null)
+
+                    override suspend fun refresh(context: Context, previous: PlaybackGrant?): PlaybackGrant =
+                        PlaybackGrant("generated-audio-fixture", System.currentTimeMillis() + 300_000)
+
+                    override suspend fun resolve(contentUri: android.net.Uri, grant: PlaybackGrant): ResolvedPlayback {
+                        if (contentUri.toString() != FIXTURE_URI) {
+                            throw LocalPlaybackUnavailable("Not a fixture track")
+                        }
+
+                        return ResolvedPlayback(android.net.Uri.fromFile(file), null)
+                    }
+                }
+                val generation = nextGeneration.incrementAndGet()
+                val session = LocalPlaybackSession(this, source, scope, Secrets(this), "media3-fixture-session")
+                val controller = LocalPlaybackController(this, generation, session, source, scope)
+                localController = controller
+                NativeCore.setLocalPlaybackRoute(generation, true)
+                local = controller
+            }
+
+            return START_NOT_STICKY
+        }
+
         if (intent?.action == QUIT) {
             Core.engineStop()
             return START_NOT_STICKY
@@ -142,28 +184,10 @@ class PlaybackService : Service() {
             return START_NOT_STICKY
         }
 
-        val port = runCatching {
-            ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
-        }.getOrDefault(0)
-
-        if (!Termux.run(this, "start", key, port, id)) {
+        if (!Termux.run(this, "start", key, engineId = id, port = EngineHost.port)) {
             EngineHost.exited(id, -1)
             stopSelf()
             return START_NOT_STICKY
-        }
-
-        localConnection?.cancel()
-        localTransport?.close()
-        val transport = if (port != 0) SoloistTransport(port) else null
-        localTransport = transport
-        EngineHost.transport = transport
-        localConnection = transport?.let { connection ->
-            scope.launch {
-                while (EngineHost.transport === connection) {
-                    connection.connect()
-                    delay(750)
-                }
-            }
         }
 
         // player.sh stops Soloist if the lease is not renewed, so a dead app never leaves it running.
@@ -184,7 +208,7 @@ class PlaybackService : Service() {
             .putString(MediaMetadata.METADATA_KEY_ALBUM, playback.album)
             .putLong(MediaMetadata.METADATA_KEY_DURATION, playback.durationMs.toLong()).build())
         val status = when {
-            playback.changingTrack -> PlaybackState.STATE_BUFFERING
+            playback.loading -> PlaybackState.STATE_BUFFERING
             playback.playing -> PlaybackState.STATE_PLAYING
             else -> PlaybackState.STATE_PAUSED
         }
@@ -211,7 +235,11 @@ class PlaybackService : Service() {
         .setStyle(Notification.MediaStyle().setMediaSession(media.sessionToken)).setOngoing(true).build()
 
     override fun onDestroy() {
-        localTransport?.close()
+        localController?.let {
+            local = null
+            NativeCore.setLocalPlaybackRoute(it.generation, false)
+            it.close()
+        }
         keepalive?.cancel()
         scope.cancel()
         media.release()

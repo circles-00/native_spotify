@@ -75,12 +75,31 @@ unsigned artwork_store_next(const ArtworkStore *store) {
             continue;
         }
 
-        if (slot == ARTWORK_CACHE_LIMIT || entry->used > store->entries[slot].used) {
+        bool priority = entry->priority_frame == store->frame;
+        bool selected_priority = slot < ARTWORK_CACHE_LIMIT && store->entries[slot].priority_frame == store->frame;
+
+        if (slot == ARTWORK_CACHE_LIMIT || (priority && !selected_priority) ||
+            (priority == selected_priority && entry->used > store->entries[slot].used)) {
             slot = i;
         }
     }
 
     return slot;
+}
+
+void artwork_store_request_priority(ArtworkStore *store, const char *url, uint64_t now) {
+    ArtworkEntry *entry = artwork_store_request(store, url, now);
+
+    if (!entry) {
+        return;
+    }
+
+    entry->priority_frame = store->frame;
+
+    if (entry->state == ART_FAILED && entry->budget_failed) {
+        entry->budget_failed = false;
+        entry->state = ART_PENDING;
+    }
 }
 
 size_t artwork_store_bytes(const ArtworkStore *store) {
@@ -97,7 +116,7 @@ size_t artwork_store_bytes(const ArtworkStore *store) {
     return total;
 }
 
-bool artwork_store_evict_budget(ArtworkStore *store, size_t reserve_bytes) {
+bool artwork_store_evict_budget(ArtworkStore *store, size_t reserve_bytes, bool priority) {
     if (reserve_bytes > ARTWORK_HARD_BYTES_LIMIT) {
         return false;
     }
@@ -129,7 +148,7 @@ bool artwork_store_evict_budget(ArtworkStore *store, size_t reserve_bytes) {
         total -= freed;
     }
 
-    return total + reserve_bytes <= ARTWORK_HARD_BYTES_LIMIT;
+    return total + reserve_bytes <= ARTWORK_HARD_BYTES_LIMIT + (priority ? ARTWORK_PRIORITY_BYTES_LIMIT : 0);
 }
 
 bool artwork_store_prune_stale(ArtworkStore *store, uint64_t keep_frames, size_t target_bytes) {

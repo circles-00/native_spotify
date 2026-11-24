@@ -21,6 +21,7 @@ add_library(native_spotify_android SHARED
     ${repo}/src/core/api.c
     ${repo}/src/core/artwork.c
     ${repo}/src/core/engine.c
+    ${repo}/src/core/soloist.c
     ${repo}/src/core/app.c
     ${repo}/src/core/app_content.c
     ${repo}/src/core/app_queue.c

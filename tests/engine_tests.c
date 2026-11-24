@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "engine.h"
 #include "platform.h"
+#include "soloist.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +10,9 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #endif
 
@@ -207,6 +211,137 @@ static void test_files(void) {
 #endif
 }
 
+#ifndef _WIN32
+/* A minimal stand-in for Soloist's socket: answers handshakes, get_state and commands. */
+typedef struct {
+    int listener;
+    char last_command[256];
+} FakeSoloist;
+
+static bool read_all(int socket, unsigned char *out, size_t size) {
+    while (size) {
+        ssize_t count = recv(socket, out, size, 0);
+
+        if (count <= 0) {
+            return false;
+        }
+
+        out += count;
+        size -= (size_t)count;
+    }
+
+    return true;
+}
+
+static void reply(int socket, const char *text) {
+    size_t size = strlen(text);
+    unsigned char head[4] = {0x81, 0, 0, 0};
+    size_t header = 2;
+
+    if (size < 126) {
+        head[1] = (unsigned char)size;
+    } else {
+        head[1] = 126;
+        head[2] = (unsigned char)(size >> 8);
+        head[3] = (unsigned char)size;
+        header = 4;
+    }
+
+    send(socket, head, header, 0);
+    send(socket, text, size, 0);
+}
+
+static void serve(void *argument) {
+    FakeSoloist *fake = argument;
+
+    for (int client; (client = accept(fake->listener, NULL, NULL)) >= 0;) {
+        char handshake[1024] = {0};
+        size_t length = 0;
+
+        while (length < sizeof(handshake) - 1 && !strstr(handshake, "\r\n\r\n") &&
+               recv(client, handshake + length, 1, 0) == 1) {
+            ++length;
+        }
+
+        const char *upgrade = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+        send(client, upgrade, strlen(upgrade), 0);
+
+        unsigned char head[2];
+        unsigned char mask[4];
+        char frame[256] = {0};
+
+        if (!read_all(client, head, 2) || (head[1] & 0x7f) >= sizeof(frame) || !read_all(client, mask, 4) ||
+            !read_all(client, (unsigned char *)frame, head[1] & 0x7f)) {
+            close(client);
+            continue;
+        }
+
+        for (size_t i = 0; i < (head[1] & 0x7fu); ++i) {
+            frame[i] ^= (char)mask[i % 4];
+        }
+
+        // A pushed event first: clients must skip it while waiting for their reply.
+        reply(client, "{\"type\":\"volume_changed\",\"volume\":50}");
+
+        if (strstr(frame, "get_state")) {
+            reply(client, "{\"type\":\"playback_state\",\"is_active\":true,\"status\":\"paused\","
+                          "\"position\":{\"position_ms\":4200,\"timestamp_ms\":1,\"speed\":0.0},"
+                          "\"item\":{\"uri\":\"spotify:track:4uLU6hMCjMI75M1A2tKUQC\"}}");
+            continue;
+        }
+
+        snprintf(fake->last_command, sizeof(fake->last_command), "%s", frame);
+        reply(client, strstr(frame, "skip_next") ? "{\"type\":\"command_result\",\"command\":\"skip_next\","
+                                                   "\"success\":false}"
+                                                 : "{\"type\":\"command_result\",\"command\":\"seek\"}");
+        close(client);
+    }
+}
+
+static unsigned changes;
+
+static void changed(void) {
+    ++changes;
+}
+
+static void test_soloist_socket(void) {
+    FakeSoloist fake = {.listener = socket(AF_INET, SOCK_STREAM, 0)};
+    unsigned port = loopback_free_port();
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons((unsigned short)port)};
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    CHECK(port && bind(fake.listener, (struct sockaddr *)&address, sizeof(address)) == 0);
+    CHECK(listen(fake.listener, 8) == 0);
+    CHECK(platform_start_thread(serve, &fake));
+
+    // Before the event connection learns this device is active, everything falls back to the Web API.
+    CHECK(soloist_command("seek:spotify:track:x", 1000) == ENGINE_COMMAND_UNAVAILABLE);
+    soloist_attach(port, changed);
+
+    Playback playback;
+    bool read = false;
+
+    for (unsigned attempt = 0; attempt < 100 && !read; ++attempt) {
+        read = soloist_playback("phone", "Native Spotify Phone", &playback);
+
+        if (!read) {
+            platform_sleep(20);
+        }
+    }
+
+    CHECK(read && changes > 0);
+    CHECK(!playback.playing && playback.position_ms == 4200);
+    CHECK(soloist_command("seek:spotify:track:x", 91000) == ENGINE_COMMAND_ACCEPTED);
+    CHECK(strstr(fake.last_command, "\"command\":\"seek\"") && strstr(fake.last_command, "\"position_ms\":91000"));
+    CHECK(soloist_command("next", 0) == ENGINE_COMMAND_REJECTED);
+    CHECK(soloist_command("enqueue:spotify:track:x", 0) == ENGINE_COMMAND_UNAVAILABLE);
+
+    soloist_detach();
+    CHECK(soloist_command("pause", 0) == ENGINE_COMMAND_UNAVAILABLE);
+    shutdown(fake.listener, SHUT_RDWR);
+    close(fake.listener);
+}
+#endif
+
 int main(void) {
     CHECK(platform_init());
     test_keys();
@@ -214,6 +349,9 @@ int main(void) {
     test_devices_and_paths();
     test_processes();
     test_files();
+#ifndef _WIN32
+    test_soloist_socket();
+#endif
 
     printf("PASS: %u engine checks (Soloist key handling, update policy, device match, owned processes, "
            "files, archive extraction)\n",

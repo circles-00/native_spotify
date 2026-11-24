@@ -48,6 +48,15 @@ uint64_t platform_milliseconds(void) {
     return GetTickCount64();
 }
 
+uint64_t platform_unix_milliseconds(void) {
+    FILETIME now;
+    GetSystemTimeAsFileTime(&now);
+    uint64_t ticks = (uint64_t)now.dwHighDateTime << 32 | now.dwLowDateTime;
+
+    // FILETIME counts 100 ns intervals since 1601.
+    return ticks / 10000 - 11644473600000ULL;
+}
+
 void platform_sleep(unsigned milliseconds) {
     Sleep(milliseconds);
 }

@@ -3,7 +3,6 @@
 
 #include <jni.h>
 #include <stdbool.h>
-#include "engine.h"
 
 /*
  * Android platform services that need Java APIs (HTTPS, Keystore, browser) call static
@@ -22,7 +21,6 @@ void android_wake(void);
 
 /* Kotlin reports that the Termux engine session with this id ended. */
 void android_engine_exited(int id, int code);
-EngineCommand android_engine_command(const char *command, unsigned value);
-bool android_engine_playback(const char *device, Playback *out);
+
 
 #endif

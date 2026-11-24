@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -258,7 +259,7 @@ internal fun HomeScreen(core: CoreState, list: LazyListState, openLiked: () -> U
 @Composable
 internal fun MiniPlayer(title: String, subtitle: String, image: String, playing: Boolean, progress: Float, changingTrack: Boolean,
                         deviceIcon: Int, remote: Boolean, open: () -> Unit, devices: () -> Unit, toggle: () -> Unit) {
-    val played = if (changingTrack) 0f else animateFloatAsState(progress.coerceIn(0f, 1f), label = "progress").value
+    val played = animateFloatAsState(progress.coerceIn(0f, 1f), label = "progress").value
 
     Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp).clip(RoundedCornerShape(8.dp))
         .background(Palette.tile).pressable(label = "Open Now Playing", onClick = open)) {
@@ -278,8 +279,16 @@ internal fun MiniPlayer(title: String, subtitle: String, image: String, playing:
                 DesktopIcon(deviceIcon, 20.dp, if (remote) Palette.accent else Palette.text)
             }
             Box(Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = toggle)
-                .semantics { contentDescription = if (playing) "Pause" else "Play" }, contentAlignment = Alignment.Center) {
-                DesktopIcon(if (playing) BuildConfig.ICON_PAUSE else BuildConfig.ICON_PLAY, 20.dp, Palette.text)
+                .semantics { contentDescription = when {
+                    changingTrack -> "Switching track"
+                    playing -> "Pause"
+                    else -> "Play"
+                } }, contentAlignment = Alignment.Center) {
+                if (changingTrack) {
+                    CircularProgressIndicator(Modifier.size(18.dp), color = Palette.text, strokeWidth = 2.dp)
+                } else {
+                    DesktopIcon(if (playing) BuildConfig.ICON_PAUSE else BuildConfig.ICON_PLAY, 20.dp, Palette.text)
+                }
             }
         }
 

@@ -58,6 +58,17 @@ class CoreSnapshotTest {
     }
 
     @Test
+    fun searchRadioQueueCanBeLoadingWithoutAnyRows() {
+        val loading = parseSnapshot("""{"queue":{"loading":true,"total":0}}""").queue
+        val ready = parseSnapshot("""{"queue":{"loading":false,"total":1,"queued":1,"items":[$song]}}""").queue
+
+        assertTrue(loading.loading)
+        assertTrue(loading.items.isEmpty())
+        assertFalse(ready.loading)
+        assertEquals("Let Down", ready.items.single().title)
+    }
+
+    @Test
     fun searchSubtitlesFollowTheDesktopRules() {
         val song = itemFromJson(song)!!
         val album = song.copy(kind = BuildConfig.ITEM_ALBUM)

@@ -2,7 +2,10 @@
 
 - C17 shared core, with thin native OS frontends and platform-service adapters.
 - Windows is the primary platform; keep portable code free of OS/UI headers.
-- No browser UI/runtime, GTK, Qt or application OpenGL dependency.
+- No browser UI or runtime except for an Android WebView used only for sign-in
+  and on-demand session refresh. Preserve the session across app launches and
+  release the WebView when authentication is done. UI and playback stay native.
+- No GTK, Qt or application OpenGL dependency.
 - Native does NOT mean classic-looking OS buttons/list boxes. The UI must follow
   Spotify's modern desktop look: see `design/REFERENCES.md`. Keep shared visuals
   and event-driven animations consistent on Windows and Linux. No permanent

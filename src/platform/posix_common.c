@@ -26,6 +26,13 @@ uint64_t platform_milliseconds(void) {
     return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
 }
 
+uint64_t platform_unix_milliseconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+
+    return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+}
+
 void platform_sleep(unsigned milliseconds) {
     struct timespec delay = {(time_t)(milliseconds / 1000), (long)(milliseconds % 1000) * 1000000};
 

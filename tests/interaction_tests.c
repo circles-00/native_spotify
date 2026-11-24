@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "app.h"
 #include "app_internal.h"
+#include "engine.h"
 #include "platform.h"
 #include "player_fixture.h"
 #include "ui/canvas_raster.h"
@@ -917,6 +918,45 @@ static CatalogItem queue_song(unsigned number) {
     return song;
 }
 
+static unsigned previous_commands;
+static EngineCommand previous_result;
+
+static bool previous_engine_playback(const char *device, Playback *out) {
+    (void)device;
+    (void)out;
+    return false;
+}
+
+static EngineCommand previous_engine_command(const char *command, unsigned value) {
+    CHECK(value == 0);
+    CHECK(!strcmp(command, previous_commands++ == 0 ? "previous" : "play"));
+    return !strcmp(command, "previous") ? previous_result : ENGINE_COMMAND_ACCEPTED;
+}
+
+static void test_previous_resumes_playback(void) {
+    engine_set_options((EngineOptions){.command = previous_engine_command, .playback = previous_engine_playback});
+    platform_lock();
+    app_state.view.engine = ENGINE_READY;
+    copy_utf8(app_state.view.engine_device_id, sizeof(app_state.view.engine_device_id), "local");
+    Job job = {.action = ACTION_PREVIOUS, .session = app_state.view.session_revision,
+               .target = {.has_device = true, .device_id = "local"}};
+    platform_unlock();
+
+    Spotify spotify = {0};
+    previous_commands = 0;
+    previous_result = ENGINE_COMMAND_ACCEPTED;
+    app_run_player(&spotify, &job);
+    CHECK(previous_commands == 2);
+
+    previous_commands = 0;
+    previous_result = ENGINE_COMMAND_UNCONFIRMED;
+    app_run_player(&spotify, &job);
+    CHECK(previous_commands == 1);
+
+    engine_set_options((EngineOptions){0});
+    app_reset_session();
+}
+
 static void test_app_managed_queue(void) {
     Spotify offline = {0};
     View *view = malloc(sizeof(*view));
@@ -929,6 +969,31 @@ static void test_app_managed_queue(void) {
     app_state.view.queue = (Queue){.count = 2};
     app_state.view.queue.items[0] = queue_song(80);
     app_state.view.queue.items[1] = queue_song(81);
+    bool search_radio = app_state.view.settings.search_radio;
+    app_state.view.settings.search_radio = true;
+    app_state.search_radio_seed = queue_song(90);
+    platform_unlock();
+
+    // While search radio is pending, old Spotify rows aren't shown or clickable.
+    app_snapshot_into(view);
+    CHECK(view->queue.loading && view->queue.total == 0 && !queue_row(&view->queue, 0));
+    Scene loading_scene;
+    scene_init(&loading_scene);
+    loading_scene.session_revision = view->session_revision;
+    loading_scene.panel = PANEL_QUEUE;
+    scene_layout(&loading_scene, view, 1280, 800);
+    CHECK(!loading_scene.hits[HIT_QUEUE_ROW_FIRST].enabled && !loading_scene.hits[HIT_QUEUE_CLEAR].enabled);
+
+    // Completion without recommendations also leaves the loading state.
+    platform_lock();
+    copy_utf8(app_state.radio_guarded_uri, sizeof(app_state.radio_guarded_uri), app_state.view.playback.uri);
+    platform_unlock();
+    app_snapshot_into(view);
+    CHECK(!view->queue.loading && view->queue.total == 2);
+    platform_lock();
+    app_state.view.settings.search_radio = search_radio;
+    app_state.search_radio_seed = (CatalogItem){0};
+    app_state.radio_guarded_uri[0] = 0;
     platform_unlock();
 
     // Added songs stay in the app and are shown ahead of Spotify's own upcoming songs.
@@ -2216,13 +2281,15 @@ static void test_recent_search_popup(void) {
     scene_layout(&scene, &view, 1280, 800);
     CHECK(scene.search_history_open);
     CHECK(scene.search_history_panel.x == scene.search.x && scene.search_history_panel.w == scene.search.w);
-    CHECK(scene.search_history_scroll.extent > scene.search_history_scroll.viewport);
+    CHECK(scene.search_history_scroll.extent == 5 * HISTORY_ROW_HEIGHT);
+    CHECK(scene.hits[HIT_HISTORY_FIRST + 4].enabled);
+    CHECK(!scene.hits[HIT_HISTORY_FIRST + 5].enabled);
 
     Rect remove = scene.hits[HIT_HISTORY_REMOVE_FIRST].rect;
     CHECK(scene_hit(&scene, remove.x + 2, remove.y + 2) == HIT_HISTORY_REMOVE_FIRST);
     scene.over_search_history = true;
     scene_wheel(&scene, &view, .5f, 2, false);
-    CHECK(scene.search_history_scroll.target == HISTORY_ROW_HEIGHT);
+    CHECK(scene.search_history_scroll.target == 0);
     CHECK(scene.main_scroll.target == 0);
     scene_press(&scene, &view, 10, 480, 120);
     CHECK(!scene.search_history_open);
@@ -3156,6 +3223,7 @@ int main(void) {
     test_playlist_sort_filter_and_play();
     test_devices_panel_and_badge();
     test_app_managed_queue();
+    test_previous_resumes_playback();
     test_playlist_queue_and_cache();
     test_song_radio_and_art_play();
     test_playlist_sorting_and_settings();

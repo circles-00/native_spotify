@@ -34,6 +34,7 @@ typedef struct {
     unsigned total;
     bool has_current;
     bool truncated;
+    bool loading;
 } Queue;
 
 typedef struct {
@@ -82,6 +83,7 @@ void player_sync_expect_track(PlayerSync *sync, const Playback *previous, const 
                               const char *expected_uri, bool allow_restart, uint64_t now_ms);
 void player_sync_received(PlayerSync *sync, uint64_t now_ms, bool success, bool playing,
                           uint64_t retry_at_ms);
+void player_sync_near_track_end(PlayerSync *sync, const Playback *playback, uint64_t now_ms, uint64_t retry_at_ms);
 bool player_seek_position(const Playback *playback, unsigned fraction, unsigned *position);
 bool player_seek_url(const Playback *playback, unsigned position, char *out, size_t capacity);
 bool player_volume_url(const Playback *playback, unsigned percent, char *out, size_t capacity);

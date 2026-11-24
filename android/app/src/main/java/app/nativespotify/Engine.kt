@@ -66,6 +66,9 @@ internal const val PAIRING_MESSAGE =
     "Open Spotify on this phone, tap the devices icon, and choose “Native Spotify Phone”. You only do this once."
 
 internal object Engine {
+    suspend fun signInForLocalPlayback(context: Context): PlaybackGrant =
+        PlaybackService.localSession().signIn(context)
+
     val state = MutableStateFlow(EngineSetup())
     private val main = Handler(Looper.getMainLooper())
     private var generation = 0

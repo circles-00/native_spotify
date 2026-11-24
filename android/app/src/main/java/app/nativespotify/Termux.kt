@@ -49,7 +49,7 @@ internal object Termux {
         return null
     }
 
-    fun run(context: Context, action: String, key: String = "", port: Int = 0, engineId: Int = 0): Boolean {
+    fun run(context: Context, action: String, key: String = "", engineId: Int = 0, port: Int = 0): Boolean {
         require(action in setOf("check", "setup", "status", "pair", "start", "stop", "keepalive"))
         val quiet = action == "keepalive" || action == "stop"
         problem(context)?.let {
@@ -122,6 +122,11 @@ class TermuxResult : BroadcastReceiver() {
             return
         }
 
+        // Setup output holds no secrets; keep it where adb can read it when Termux closes the window.
+        if (action == "setup" && exit != 0) {
+            output.lines().takeLast(60).forEach { android.util.Log.w("NativeSetup", it) }
+        }
+
         val message = termuxResultMessage(action, exit, allowed, output)
         Termux.status.value = message
         Engine.acceptResult(context, action, exit, allowed, message)
@@ -157,6 +162,8 @@ internal fun termuxResultMessage(action: String, exit: Int, allowed: Boolean, st
         stage == "debian-packages" -> "Debian dependency installation failed."
         stage == "download" -> "The Soloist download or archive extraction failed."
         stage == "binary" -> "The Soloist binary could not run in Debian."
+        stage == "native-libraries" -> "Collecting Soloist's libraries from Debian failed."
+        stage == "native-engine" -> "Soloist could not run on Termux's glibc. Reinstall the engine."
         stage == "audio-output" -> "Neither Android audio output started."
         stage == "launch" -> "Soloist or its audio bridge exited during startup or playback."
         stage == "pairing" -> "Soloist pairing failed. Check your saved key and try pairing again."

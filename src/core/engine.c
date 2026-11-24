@@ -1,4 +1,5 @@
 #include "engine.h"
+#include "soloist.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -100,16 +101,21 @@ const char *engine_device_name(void) {
     return options.device_name;
 }
 
+bool engine_dispatch_local_playback(const LocalPlaybackCommand *command) {
+#ifdef __ANDROID__
+    return android_dispatch_local_playback(command);
+#else
+    (void)command;
+    return false;
+#endif
+}
+
 EngineCommand engine_command(const char *command, unsigned value) {
-    return options.command ? options.command(command, value) : ENGINE_COMMAND_UNAVAILABLE;
+    return options.command ? options.command(command, value) : soloist_command(command, value);
 }
 
 bool engine_playback(const char *device, Playback *out) {
-    return options.playback && options.playback(device, out);
-}
-
-bool engine_has_local_playback(void) {
-    return options.playback != NULL;
+    return options.playback ? options.playback(device, out) : soloist_playback(device, options.device_name, out);
 }
 
 bool engine_starts_on_play(void) {
@@ -129,6 +135,7 @@ int engine_find_device(const Devices *devices) {
 /* Runtime. Shared fields are guarded by platform_lock(); notify() is never called while holding it. */
 
 static EngineNotify notify;
+static void (*playback_changed)(void);
 static EngineState state = ENGINE_OFF;
 static PlatformProcess *process;
 static unsigned generation;
@@ -138,8 +145,9 @@ static bool force_download;
 static unsigned restarts;
 static uint64_t started_ms;
 
-void engine_configure(EngineNotify callback) {
+void engine_configure(EngineNotify callback, void (*changed)(void)) {
     notify = callback;
+    playback_changed = changed;
 }
 
 static bool publish(unsigned expected, EngineState next, const char *message) {
@@ -180,7 +188,7 @@ static void stop_finished(void *finished) {
 }
 
 /* Starts Soloist for the current generation and reports whether it is on its way. */
-static void start(unsigned expected, const char *path, const char *const *arguments) {
+static void start(unsigned expected, const char *path, const char *const *arguments, unsigned socket_port) {
     platform_lock();
     bool current = expected == generation;
     PlatformProcess *started =
@@ -198,6 +206,7 @@ static void start(unsigned expected, const char *path, const char *const *argume
     }
 
     if (started) {
+        soloist_attach(socket_port, playback_changed);
         publish(expected, ENGINE_STARTING, "Starting Spotify Soloist…");
     }
 }
@@ -214,10 +223,17 @@ static void run(void *argument) {
         return;
     }
 
-    // A hosting platform installs Soloist itself; it only needs the key and the device name.
+    // Playback on this device is controlled through Soloist's loopback socket, as Spotifast does.
+    unsigned socket_port = loopback_free_port();
+    char socket_address[32];
+    snprintf(socket_address, sizeof(socket_address), "127.0.0.1:%u", socket_port);
+    const char *socket_flag = socket_port ? "--ws" : NULL;
+
+    // A hosting platform installs Soloist itself; it only needs the key, the device name and the socket.
     if (options.hosted) {
-        const char *arguments[] = {EXECUTABLE, "--device-name", options.device_name, "--api-key", key, NULL};
-        start(expected, EXECUTABLE, arguments);
+        const char *arguments[] = {EXECUTABLE, "--device-name", options.device_name, "--api-key", key,
+                                   socket_flag, socket_address, NULL};
+        start(expected, EXECUTABLE, arguments, socket_port);
         platform_wipe(key, sizeof(key));
         finish();
         return;
@@ -263,10 +279,11 @@ static void run(void *argument) {
         return;
     }
 
-    const char *arguments[] = {paths.executable, "--device-name", options.device_name, "--api-key", key,
-                               "--data-dir",     paths.data,      "--cache-dir",       paths.cache, NULL};
+    const char *arguments[] = {paths.executable, "--device-name", options.device_name, "--api-key",
+                               key,              "--data-dir",    paths.data,          "--cache-dir",
+                               paths.cache,      socket_flag,     socket_address,      NULL};
 
-    start(expected, paths.executable, arguments);
+    start(expected, paths.executable, arguments, socket_port);
     platform_wipe(key, sizeof(key));
     finish();
 }
@@ -314,6 +331,8 @@ static void process_exited(int code, void *context) {
     if (!current) {
         return;
     }
+
+    soloist_detach();
 
     // The watcher thread is finishing; release its handles from another thread.
     if (finished) {
@@ -395,6 +414,7 @@ void engine_stop(void) {
     state = ENGINE_OFF;
     platform_unlock();
 
+    soloist_detach();
     platform_process_stop(stopping);
 }
 

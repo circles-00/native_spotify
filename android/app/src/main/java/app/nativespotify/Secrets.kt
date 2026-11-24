@@ -36,9 +36,14 @@ internal class Secrets(context: Context) {
     }.getOrNull()
 
     @Synchronized
-    fun put(name: String, value: String?) {
+    fun put(name: String, value: String?, durable: Boolean = false) {
         if (value == null) {
-            prefs.edit().remove(name).apply()
+            val edit = prefs.edit().remove(name)
+            if (durable) {
+                check(edit.commit())
+            } else {
+                edit.apply()
+            }
             return
         }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -46,6 +51,11 @@ internal class Secrets(context: Context) {
         check(cipher.iv.size == 12)
         cipher.updateAAD(name.toByteArray())
         val encrypted = cipher.iv + cipher.doFinal(value.toByteArray())
-        prefs.edit().putString(name, Base64.encodeToString(encrypted, Base64.NO_WRAP)).apply()
+        val edit = prefs.edit().putString(name, Base64.encodeToString(encrypted, Base64.NO_WRAP))
+        if (durable) {
+            check(edit.commit())
+        } else {
+            edit.apply()
+        }
     }
 }

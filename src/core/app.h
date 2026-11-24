@@ -8,6 +8,12 @@
 #include "lyrics.h"
 #include "collection.h"
 
+bool app_dispatch_native_playback(const LocalPlaybackCommand *command);
+bool app_native_playback_event(const LocalPlaybackEvent *event);
+void app_set_native_playback_route(uint64_t generation, bool enabled);
+int app_native_playback_state(uint64_t generation, uint64_t request_id);
+int64_t app_native_playback_position(uint64_t generation, uint64_t request_id);
+
 typedef enum {
     ACTION_RESTORE,
     ACTION_CONNECT,
@@ -42,7 +48,8 @@ typedef enum {
     ACTION_TOGGLE_PLAYBACK,
     ACTION_LYRICS,
     ACTION_PLAYBACK_FOLLOWUP,
-    ACTION_SYNC_WEB
+    ACTION_SYNC_WEB,
+    ACTION_SEARCH_RADIO
 } Action;
 
 /* Rows around the scroll position; the full collection stays in the app so snapshots stay small. */

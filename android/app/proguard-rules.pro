@@ -9,8 +9,7 @@
     public static *** wake();
 }
 -keep class app.nativespotify.CoreHost {
-    public static *** engineStart(int, byte[]);
+    public static *** engineStart(int, byte[], int);
     public static *** engineStop(int);
-    public static *** engineCommand(java.lang.String, int);
-    public static *** enginePlayback(java.lang.String);
+    public static *** dispatchLocalPlayback(int, java.lang.String, long, long, long);
 }

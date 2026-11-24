@@ -40,6 +40,8 @@ Android: Compose → ViewModel → Kotlin → JNI ┘
 
 ## Android playback feasibility
 
+**November 20 replacement decision:** [Native Media3 playback is designed but blocked on an authorized Spotify source](ANDROID_LOCAL_PLAYBACK.md). The Soloist observations below describe earlier runs; a subsequent launch did not establish a Connect session. Keep the existing route until a replacement passes the Galaxy checks.
+
 Reviewed Spotify's public documentation and the current repo on November 19, 2026. The S24 Ultra test below is a partial on-device result, not proof of audible playback.
 
 | Candidate | Finding | Decision |

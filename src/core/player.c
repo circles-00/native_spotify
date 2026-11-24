@@ -443,6 +443,20 @@ void player_sync_received(PlayerSync *sync, uint64_t now_ms, bool success, bool 
     }
 }
 
+void player_sync_near_track_end(PlayerSync *sync, const Playback *playback, uint64_t now_ms, uint64_t retry_at_ms) {
+    if (!playback->playing || !playback->position_known || !playback->duration_ms ||
+        playback->position_ms >= playback->duration_ms) {
+        return;
+    }
+
+    uint64_t delay = (uint64_t)playback->duration_ms - playback->position_ms + 250;
+    uint64_t due = now_ms + (delay < 500 ? 500 : delay);
+
+    if (due >= retry_at_ms && due < sync->next_ms) {
+        sync->next_ms = due;
+    }
+}
+
 bool player_seek_position(const Playback *playback, unsigned fraction, unsigned *position) {
     if (fraction > 1000 || !playback_can_seek(playback)) {
         return false;

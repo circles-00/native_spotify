@@ -1,6 +1,7 @@
 #include "api.h"
 #include "player.h"
 #include "player_fixture.h"
+#include "soloist.h"
 #include "yyjson.h"
 
 #include <stdio.h>
@@ -291,6 +292,15 @@ static void test_commands_and_sync(void) {
     player_sync_received(&sync, 390000, true, true, 0);
     CHECK(sync.next_ms == 395000 && sync.failures == 0);
 
+    Playback ending = {.playing = true, .position_known = true, .position_ms = 178000, .duration_ms = 180000};
+    player_sync_near_track_end(&sync, &ending, 390000, 394000);
+    CHECK(sync.next_ms == 395000);
+    player_sync_near_track_end(&sync, &ending, 390000, 0);
+    CHECK(sync.next_ms == 392250);
+    ending.position_ms = ending.duration_ms;
+    player_sync_near_track_end(&sync, &ending, 390000, 0);
+    CHECK(sync.next_ms == 392250);
+
     Playback incoming = {.has_device = true, .device_id = "test-device", .playing = true};
     player_sync_expect_playing(&sync, "test-device", false, 400000);
     CHECK(player_sync_waiting(&sync, &incoming, 400100));
@@ -462,6 +472,43 @@ static void test_playback_options(void) {
     CHECK(playback.shuffle && playback.repeat == REPEAT_TRACK);
 }
 
+static void test_soloist_state(void) {
+    const char *state =
+        "{\"type\":\"playback_state\",\"is_active\":true,\"status\":\"playing\",\"volume\":64,"
+        "\"options\":{\"shuffle\":true,\"repeat\":\"context\"},"
+        "\"context\":{\"uri\":\"spotify:album:6dVIqQ8qmQ5GBnJ9shOYGE\"},"
+        "\"position\":{\"position_ms\":80000,\"timestamp_ms\":1000000,\"speed\":1.0},"
+        "\"available_actions\":{\"seek\":{},\"skip_next\":{}},"
+        "\"item\":{\"uri\":\"spotify:track:4uLU6hMCjMI75M1A2tKUQC\",\"entity_type\":\"track\",\"decorations\":{"
+        "\"identity\":{\"name\":\"Let Down\"},\"playback\":{\"duration_ms\":299000},"
+        "\"creators\":[{\"entity\":{\"uri\":\"spotify:artist:4Z8W4fKeB5YxbusRsdQVPb\","
+        "\"decorations\":{\"identity\":{\"name\":\"Radiohead\"}}}}],"
+        "\"parent\":{\"entity\":{\"uri\":\"spotify:album:6dVIqQ8qmQ5GBnJ9shOYGE\","
+        "\"decorations\":{\"identity\":{\"name\":\"OK Computer\"}}}}}}}";
+    Playback playback;
+
+    // The anchor dates the position: 1.5 s later, a playing track has moved on by 1.5 s.
+    CHECK(soloist_state_parse(state, "phone", "Native Spotify Phone", 1001500, &playback));
+    CHECK(playback.playing && !playback.buffering && playback.position_known);
+    CHECK(playback.position_ms == 81500 && playback.anchor_position_ms == 80000);
+    CHECK(playback.anchor_timestamp_ms == 1000000 && playback.duration_ms == 299000);
+    CHECK(!strcmp(playback.uri, "spotify:track:4uLU6hMCjMI75M1A2tKUQC") && !strcmp(playback.title, "Let Down"));
+    CHECK(!strcmp(playback.artist, "Radiohead") && !strcmp(playback.artist_id, "4Z8W4fKeB5YxbusRsdQVPb"));
+    CHECK(!strcmp(playback.album, "OK Computer") && !strcmp(playback.album_id, "6dVIqQ8qmQ5GBnJ9shOYGE"));
+    CHECK(!strcmp(playback.device_id, "phone") && playback.has_device && !playback.restricted);
+    CHECK(playback.shuffle && playback.repeat == REPEAT_CONTEXT && playback.volume_percent == 64);
+    CHECK(!playback.seeking_disallowed && !playback.skipping_next_disallowed &&
+          playback.skipping_previous_disallowed);
+
+    // Buffering after a seek holds the clock at the target.
+    const char *buffering = "{\"status\":\"buffering\",\"position\":{\"position_ms\":120000,"
+                            "\"timestamp_ms\":1000000,\"speed\":0.0}}";
+    CHECK(soloist_state_parse(buffering, "phone", "Native Spotify Phone", 1003000, &playback));
+    CHECK(!playback.playing && playback.buffering && playback.position_ms == 120000);
+
+    CHECK(!soloist_state_parse("{\"status\":\"unknown\"}", "phone", "Phone", 0, &playback));
+}
+
 int main(void) {
     test_devices();
     test_queue();
@@ -471,6 +518,7 @@ int main(void) {
     test_seek_confirmation();
     test_local_seek_confirmation();
     test_playback_options();
+    test_soloist_state();
 
     printf("PASS: %u player checks (devices, queue, restrictions, transfer JSON, seek/volume URLs, drafts)\n",
            checks);

@@ -54,13 +54,18 @@ internal object NativeCore {
     external fun seek(fraction: Int): Boolean
     external fun seekLyric(uri: String, position: Int): Boolean
     external fun tick(visible: Boolean): Int
-    external fun enginePlaybackChanged()
     external fun devicesVisible(visible: Boolean)
     external fun transferTo(id: String): Boolean
     external fun transferHere(): Boolean
     external fun volume(percent: Int): Boolean
     external fun engineStop()
     external fun engineExited(id: Int, code: Int)
+    external fun dispatchLocalPlayback(action: Int, uri: String?, requestId: Long, positionMs: Long): Boolean
+    external fun setLocalPlaybackRoute(generation: Long, enabled: Boolean)
+    external fun localPlaybackState(generation: Long, requestId: Long): Int
+    external fun localPlaybackPosition(generation: Long, requestId: Long): Long
+    external fun localPlaybackEvent(generation: Long, requestId: Long, state: Int, positionMs: Long,
+        durationMs: Long): Boolean
     external fun snapshot(): ByteArray?
 }
 
@@ -114,7 +119,11 @@ internal data class PlaybackInfo(
     val receivedAt: Long = 0, val deviceId: String = "", val volume: Int = -1, val canVolume: Boolean = false,
     val changingTrack: Boolean = false,
     val seeking: Boolean = false,
+    val buffering: Boolean = false,
 ) {
+    /** Between tracks or while the player fills its buffer: show progress, not Play. */
+    val loading: Boolean get() = changingTrack || buffering
+
     /** The position now, moving on from the snapshot while playing. */
     fun position(now: Long = clock()): Int {
         val moved = if (playing && !changingTrack && !seeking) (now - receivedAt).coerceAtLeast(0) else 0
@@ -140,7 +149,7 @@ internal data class DevicesInfo(val engineId: String = "", val remoteSelected: B
                                 val items: List<DeviceInfo> = emptyList())
 
 internal data class QueueInfo(val first: Int = 0, val total: Int = 0, val queued: Int = 0, val current: Item? = null,
-                              val items: List<Item> = emptyList())
+                              val items: List<Item> = emptyList(), val loading: Boolean = false)
 
 internal data class LyricLine(val timeMs: Int, val text: String)
 internal data class LyricsInfo(val state: Int = 0, val uri: String = "", val active: Int = -1, val text: String = "",
@@ -202,6 +211,7 @@ private fun JSONObject.playback(now: Long) = PlaybackInfo(
     optInt("revision"), now, optString("deviceId"), optInt("volume", -1), optBoolean("canVolume"),
     optBoolean("changingTrack"),
     optBoolean("seeking"),
+    optBoolean("buffering"),
 )
 
 private fun JSONObject.devices(): DevicesInfo {
@@ -257,7 +267,7 @@ internal fun parseSnapshot(json: String, now: Long = clock()): CoreState {
         artistLikesFailed = root.optBoolean("artistLikesFailed"),
         playback = root.optJSONObject("playback")?.playback(now) ?: PlaybackInfo(),
         queue = QueueInfo(queue.optInt("first"), queue.optInt("total"), queue.optInt("queued"),
-            queue.items("current").firstOrNull(), queue.items("items")),
+            queue.items("current").firstOrNull(), queue.items("items"), queue.optBoolean("loading")),
         lyrics = LyricsInfo(lyrics.optInt("state"), lyrics.optString("uri"), lyrics.optInt("active", -1),
             lyrics.optString("text"), lyrics.optJSONArray("lines").objects().map { LyricLine(it.optInt("timeMs"), it.optString("text")) }),
         engine = root.optInt("engine"),
@@ -320,6 +330,14 @@ internal object Core {
     private fun publish(next: CoreState) {
         val before = mutableState.value
         mutableState.value = next
+        val b = before.playback
+        val n = next.playback
+        if (b.revision != n.revision || b.changingTrack != n.changingTrack || b.buffering != n.buffering || before.engine != next.engine ||
+            before.status != next.status) {
+            android.util.Log.d("NativeTrace", "t=${clock()} title=${n.title} changing=${n.changingTrack} buffering=${n.buffering} playing=${n.playing} " +
+                "pos=${n.positionMs} rev=${n.revision} engine=${next.engine} msg=${next.engineMessage} status=${next.status} " +
+                "device=${n.deviceId.take(6)} engineId=${next.devices.engineId.take(6)} remote=${next.devices.remoteSelected}")
+        }
         val app = context ?: return
 
         // The setup screen follows the core's view of Soloist once it runs.

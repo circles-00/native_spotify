@@ -440,6 +440,16 @@ const CatalogItem *app_queue_at_locked(const Queue *spotify, unsigned index) {
 
 /* Call with the view lock held. Fills a window of the queue starting near `first` for the snapshot. */
 void app_compose_queue_locked(const Queue *spotify, Queue *out, unsigned first) {
+    const Playback *playback = &app_state.view.playback;
+
+    if (!app_state.up_next_count && app_state.view.settings.search_radio && playback->repeat == REPEAT_OFF &&
+        (playback->playing || app_state.view.changing_track) && app_state.search_radio_seed.id[0] &&
+        !strncmp(playback->uri, "spotify:track:", 14) && !strcmp(playback->uri + 14, app_state.search_radio_seed.id) &&
+        strcmp(playback->uri, app_state.radio_guarded_uri)) {
+        *out = (Queue){.current = spotify->current, .has_current = spotify->has_current, .loading = true};
+        return;
+    }
+
     unsigned total = app_queue_total_locked(spotify);
     Queue composed = {.current = spotify->current, .has_current = spotify->has_current,
                       .queued = app_state.up_next_count, .total = total};

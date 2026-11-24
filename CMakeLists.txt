@@ -26,6 +26,7 @@ add_library(core STATIC
   src/core/api.c
   src/core/artwork.c
   src/core/engine.c
+  src/core/soloist.c
   src/core/app.c
   src/core/app_content.c
   src/core/app_queue.c

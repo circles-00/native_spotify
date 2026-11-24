@@ -322,12 +322,14 @@ static void layout_search_history(Scene *scene, const View *view) {
         return;
     }
 
+    unsigned count = view->search_history_count < DESKTOP_SEARCH_HISTORY_LIMIT ? view->search_history_count
+                                                                             : DESKTOP_SEARCH_HISTORY_LIMIT;
     float y = scene->search.y + scene->search.h + 6;
-    float extent = view->search_history_count ? view->search_history_count * HISTORY_ROW_HEIGHT : 36;
+    float extent = count ? count * HISTORY_ROW_HEIGHT : 36;
     float available = scene->player.y - y - 48;
     float viewport = extent < available ? extent : available;
 
-    if (viewport < HISTORY_ROW_HEIGHT && view->search_history_count) {
+    if (viewport < HISTORY_ROW_HEIGHT && count) {
         return;
     }
 
@@ -335,7 +337,7 @@ static void layout_search_history(Scene *scene, const View *view) {
     Rect panel = {scene->search.x, y, scene->search.w, viewport + 42};
     scene->search_history_panel = panel;
 
-    for (unsigned i = 0; i < view->search_history_count; ++i) {
+    for (unsigned i = 0; i < count; ++i) {
         Rect row = {panel.x + 6, panel.y + 34 + i * HISTORY_ROW_HEIGHT - scene->search_history_scroll.offset,
                     panel.w - 17, HISTORY_ROW_HEIGHT};
         float top = panel.y + 34;

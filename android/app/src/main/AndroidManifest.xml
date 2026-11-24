@@ -3,7 +3,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
-    <queries><package android:name="com.termux" /></queries>
+    <queries>
+        <package android:name="com.termux" />
+        <package android:name="com.spotify.music" />
+    </queries>
     <application android:label="Native Spotify" android:allowBackup="false"
         android:enableOnBackInvokedCallback="true"
         android:networkSecurityConfig="@xml/network_security_config"

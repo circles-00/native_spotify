@@ -4,13 +4,17 @@ umask 077
 
 base="$HOME/.local/share/native-spotify-android"
 guest=debian
+# Soloist runs directly on Termux's glibc; PRoot only serves setup, which borrows Debian's libraries.
+native="$base/native"
+loader="$PREFIX/glibc/lib/ld-linux-aarch64.so.1"
 mkdir -p "$base"
 cd "$base"
 
 setup() {
     setup_stage repositories
     pkg update
-    pkg install -y proot-distro pulseaudio util-linux
+    pkg install -y proot-distro pulseaudio util-linux glibc-repo
+    pkg install -y glibc-runner
 
     setup_stage audio-package
     bash ./audio.sh probe >/dev/null 2>&1 || {
@@ -27,7 +31,7 @@ setup() {
         set -eu
         printf "%s\n" "NATIVE_SPOTIFY_STAGE=debian-packages" >&2
         apt-get update -qq
-        apt-get install -y ca-certificates curl libatomic1 libpulse0 libpipewire-0.3-0t64
+        apt-get install -y ca-certificates curl libatomic1 libpulse0 libpipewire-0.3-0t64 patchelf
         mkdir -p "$HOME/soloist-test"
         cd "$HOME/soloist-test"
         archive=$(mktemp)
@@ -43,8 +47,73 @@ setup() {
         chmod 700 soloist.new
         ./soloist.new --version
         mv -f soloist.new soloist
-    '
+
+        # Everything but glibc itself, which Termux provides outside PRoot.
+        printf "%s\n" "NATIVE_SPOTIFY_STAGE=native-libraries" >&2
+        staging=$1/native.new
+        rm -rf "$staging"
+        mkdir -p "$staging/lib"
+        cp soloist "$staging/soloist"
+
+        # Point Soloist at Termux'\''s glibc loader; the path only has to exist outside the guest.
+        patchelf --set-interpreter "$2" "$staging/soloist"
+        pulse=$(ldconfig -p | awk '\''$1 == "libpulse.so.0" { print $NF; exit }'\'')
+        for library in $( { ldd soloist; ldd "$pulse"; } | awk '\''$3 ~ /^\// { print $3 }'\'' | sort -u) "$pulse"; do
+            case ${library##*/} in
+                libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|libresolv.so.*|ld-linux*) continue ;;
+            esac
+            cp -L "$library" "$staging/lib/"
+        done
+        cp -L /etc/ssl/certs/ca-certificates.crt "$staging/ca-certificates.crt"
+        cp -L /etc/resolv.conf "$staging/resolv.conf" 2>/dev/null || :
+    ' native "$base" "$loader"
+
+    setup_stage native-engine
+
+    # Android has no /etc/resolv.conf; Termux's glibc reads its own.
+    if [ ! -s "$PREFIX/glibc/etc/resolv.conf" ]; then
+        mkdir -p "$PREFIX/glibc/etc"
+        if [ -s native.new/resolv.conf ]; then
+            cp native.new/resolv.conf "$PREFIX/glibc/etc/resolv.conf"
+        else
+            printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$PREFIX/glibc/etc/resolv.conf"
+        fi
+    fi
+
+    mkdir -p native.new/home native.new/data native.new/cache
+    [ ! -d "$native/data" ] || cp -a "$native/data/." native.new/data/
+
+    # A fresh data folder means Soloist must be paired again.
+    if [ -z "$(ls -A native.new/data)" ]; then
+        rm -f paired
+    fi
+
+    rm -rf "$native"
+    mv native.new "$native"
+
+    # On failure, show why: the loader's view of the libraries and Soloist's own exit status.
+    local result=0
+    soloist --version >/dev/null || result=$?
+
+    if [ "$result" -ne 0 ]; then
+        printf 'NATIVE_SPOTIFY_DIAG exit=%s\n' "$result" >&2
+        LD_LIBRARY_PATH="$PREFIX/glibc/lib:$native/lib" "$loader" --list "$native/soloist" >&2 || :
+        ls -l "$loader" "$native/lib" >&2 || :
+        return "$result"
+    fi
 }
+
+# Runs Soloist without PRoot. The subshell execs it, so a background PID is Soloist itself.
+soloist() (
+    exec env -u LD_PRELOAD \
+        LD_LIBRARY_PATH="$PREFIX/glibc/lib:$native/lib" \
+        SSL_CERT_FILE="$native/ca-certificates.crt" \
+        PULSE_SERVER=tcp:127.0.0.1:14713 \
+        HOME="$native/home" \
+        XDG_DATA_HOME="$native/data" \
+        XDG_CACHE_HOME="$native/cache" \
+        "$native/soloist" "$@"
+)
 
 setup_stage() {
     printf 'NATIVE_SPOTIFY_STAGE=%s\n' "$1" >&2
@@ -56,7 +125,7 @@ status() {
     session=none
     active=none
 
-    if ! command -v proot-distro >/dev/null || ! command -v flock >/dev/null; then
+    if ! command -v proot-distro >/dev/null || ! command -v flock >/dev/null || [ ! -x "$loader" ]; then
         install=packages
     else
         result=0
@@ -68,32 +137,17 @@ status() {
         fi
     fi
 
-    # Ask the guest itself: proot-distro's rootfs location differs between versions.
-    guest_state=
-    if [ "$install" = ready ]; then
-        guest_state=$(proot-distro login "$guest" -- bash -c '
-            if [ -x "$HOME/soloist-test/soloist" ]; then
-                printf "%s\n" binary
-            fi
-
-            data="${XDG_DATA_HOME:-$HOME/.local/share}/soloist"
-            if [ -d "$data" ] && find "$data" -mindepth 1 -maxdepth 1 \
-                ! -name soloist.pid ! -name ws.addr ! -name ws.port | grep -q .; then
-                printf "%s\n" session
-            fi
-        ' 2>/dev/null) || guest_state=
-
-        case $guest_state in
-            *binary*) ;;
-            *) install=engine ;;
-        esac
+    if [ "$install" = ready ] && [ ! -x "$native/soloist" ]; then
+        install=engine
     fi
 
-    # The marker is written after a successful pairing; older pairings only left Soloist's own data.
-    case $guest_state in
-        *session*) session=stored ;;
-    esac
+    data="$native/data/soloist"
+    if [ -d "$data" ] && find "$data" -mindepth 1 -maxdepth 1 \
+        ! -name soloist.pid ! -name ws.addr ! -name ws.port | grep -q .; then
+        session=stored
+    fi
 
+    # The marker is written after a successful pairing.
     if [ -f paired ]; then
         session=stored
     fi
@@ -142,14 +196,39 @@ stop_engines() {
     kill -KILL $pids 2>/dev/null || :
 }
 
+soloist_diagnostics() {
+    # Forward only fixed diagnostic categories, never raw Soloist output or credentials.
+    awk '
+            { line = tolower($0) }
+            line ~ /could not resolve|cannot resolve|failed to resolve|getaddrinfo|name resolution/ { report("dns") }
+            line ~ /certificate verify|ssl connect error|tls handshake/ { report("tls") }
+            line ~ /connection refused|network is unreachable|connection timed out/ { report("network") }
+            line ~ /invalid api key|unauthorized|authentication failed|login failed/ { report("authentication") }
+            line ~ /zeroconf|mdns/ && line ~ /error|failed|unable/ { report("discovery") }
+            function report(category) {
+                if (!seen[category]++) system("/system/bin/log -t NativePair " category)
+            }
+        '
+}
+
 # Pairing waits for a choice in Spotify; give up after 10 minutes instead of lingering.
 pair() {
-    timeout 600 proot-distro login "$guest" -- bash -c '
-        set -eu
-        IFS= read -r key
-        export PULSE_SERVER=tcp:127.0.0.1:14713
-        exec "$HOME/soloist-test/soloist" --device-name "Native Spotify Phone" --api-key "$key" "$@"
-    ' soloist --pair <<< "$key"
+    soloist --device-name "Native Spotify Phone" --api-key "$key" --pair 9>&- \
+        > >(soloist_diagnostics 9>&-) 2>&1 &
+    local pairing=$!
+    /system/bin/log -t NativePair started || :
+    ( sleep 600; kill -TERM "$pairing" 2>/dev/null ) 9>&- </dev/null >/dev/null 2>&1 &
+    local timer=$!
+    local result=0
+    wait "$pairing" || result=$?
+    /system/bin/log -t NativePair "exit=$result" || :
+
+    # The timer only exits on its own after the 10 minutes ran out.
+    if ! kill "$timer" 2>/dev/null; then
+        return 124
+    fi
+
+    return "$result"
 }
 
 case ${1:-} in
@@ -206,7 +285,6 @@ player_pid=
 cleanup() {
     [ -z "$player_pid" ] || kill -TERM "$player_pid" 2>/dev/null || :
 
-    # Killing PRoot's launcher does not always stop Soloist inside it.
     stop_engines
     [ -z "$audio_pid" ] || kill -TERM "$audio_pid" 2>/dev/null || :
     rm -f stop
@@ -244,18 +322,13 @@ done
 [ -n "$audio_pid" ] || { printf '%s\n' 'Neither Android audio driver started.' >&2; exit 5; }
 
 setup_stage launch
-# Use exec so the managed PID is PRoot rather than an extra shell running it.
-proot-distro login "$guest" -- bash -c '
-    set -eu
-    IFS= read -r key
-    export PULSE_SERVER=tcp:127.0.0.1:14713
-    port=$1
-    set --
-    if [[ $port =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1024 && 10#$port <= 65535 )); then
-        set -- --ws "127.0.0.1:$port"
-    fi
-    exec "$HOME/soloist-test/soloist" --device-name "Native Spotify Phone" --api-key "$key" "$@"
-' soloist "${2:-0}" <<< "$key" 8>&- 9>&- &
+socket=()
+port=${2:-0}
+if [[ $port =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1024 && 10#$port <= 65535 )); then
+    socket=(--ws "127.0.0.1:$port")
+fi
+soloist --device-name "Native Spotify Phone" --api-key "$key" "${socket[@]}" 8>&- 9>&- \
+    > >(soloist_diagnostics 8>&- 9>&-) 2>&1 &
 player_pid=$!
 deadline=$((SECONDS + 100))
 while kill -0 "$player_pid" 2>/dev/null && kill -0 "$audio_pid" 2>/dev/null; do

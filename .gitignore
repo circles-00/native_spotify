@@ -39,3 +39,4 @@ __pycache__/
 *.apk
 *.aab
 *.jks
+/android/.kotlin/

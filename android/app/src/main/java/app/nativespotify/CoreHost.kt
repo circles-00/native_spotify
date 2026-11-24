@@ -27,6 +27,8 @@ internal object CoreHost {
         .followRedirects(false).followSslRedirects(false)
         .connectTimeout(5, TimeUnit.SECONDS).callTimeout(20, TimeUnit.SECONDS)
         .build()
+    // A lost response does not mean the device missed the skip.
+    private val skipClient = client.newBuilder().retryOnConnectionFailure(false).build()
 
     @Volatile private var context: Context? = null
 
@@ -73,7 +75,9 @@ internal object CoreHost {
             request.header("Authorization", "Bearer ${token.decodeToString()}")
         }
 
-        client.newCall(request.build()).execute().use { response ->
+        val skip = method == "POST" && address.host == "api.spotify.com" &&
+            (address.encodedPath == "/v1/me/player/next" || address.encodedPath == "/v1/me/player/previous")
+        (if (skip) skipClient else client).newCall(request.build()).execute().use { response ->
             val source = response.body?.source()
 
             // Refuse oversized bodies instead of truncating JSON the core would then misparse.
@@ -82,6 +86,7 @@ internal object CoreHost {
             }
 
             val data = source?.readByteArray() ?: ByteArray(0)
+
             val retry = response.header("Retry-After")?.toIntOrNull()?.coerceIn(0, 86_400) ?: 0
             ByteBuffer.allocate(8 + data.size).putInt(response.code).putInt(retry).put(data).array()
         }
@@ -119,21 +124,36 @@ internal object CoreHost {
         Core.requestSnapshot()
     }
 
+    @JvmStatic
+    fun dispatchLocalPlayback(action: Int, uri: String?, generation: Long, requestId: Long, positionMs: Long): Boolean {
+        val kind = LocalPlaybackAction.entries.firstOrNull { it.wireValue == action } ?: return false
+
+        if (generation <= 0 || requestId <= 0 || positionMs < 0 || (kind == LocalPlaybackAction.PLAY && uri.isNullOrBlank())) {
+            return false
+        }
+
+        return try {
+            PlaybackService.dispatchLocalPlayback(
+                LocalPlaybackCommand(kind, uri?.let(Uri::parse), generation, requestId, positionMs),
+            )
+        } catch (_: LocalPlaybackUnavailable) {
+            false
+        }
+    }
+
+    fun reportLocalPlaybackEvent(event: LocalPlaybackEvent): Boolean = NativeCore.localPlaybackEvent(
+        event.generation, event.requestId, event.state.wireValue, event.positionMs, event.durationMs,
+    )
+
     /** Starts the Termux session that runs Soloist; the playback service reports when it ends. */
     @JvmStatic
-    fun engineStart(id: Int, key: ByteArray): Boolean {
+    fun engineStart(id: Int, key: ByteArray, port: Int): Boolean {
         val app = context ?: return false
-        return EngineHost.start(app, id, key.decodeToString())
+        return EngineHost.start(app, id, key.decodeToString(), port)
     }
 
     @JvmStatic
     fun engineStop(id: Int) {
         context?.let { EngineHost.stop(it, id) }
     }
-
-    @JvmStatic
-    fun engineCommand(command: String, value: Int): Int = EngineHost.transport?.command(command, value) ?: 0
-
-    @JvmStatic
-    fun enginePlayback(device: String): ByteArray? = EngineHost.transport?.playback(device)
 }

@@ -52,6 +52,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -85,9 +86,11 @@ private fun clockText(ms: Int) = "${ms / 60_000}:${(ms / 1_000 % 60).toString().
 /** The position, moving smoothly between snapshots while something plays. */
 @Composable
 internal fun livePosition(playback: PlaybackInfo, step: Long = 500): Int {
-    var position by remember(playback) { mutableStateOf(playback.position()) }
+    var position by remember(playback.uri, playback.deviceId) { mutableStateOf(playback.position()) }
 
     LaunchedEffect(playback) {
+        if (playback.changingTrack) return@LaunchedEffect
+
         position = playback.position()
 
         while (playback.playing && !playback.changingTrack && !playback.seeking) {
@@ -250,18 +253,16 @@ internal fun NowPlayingScreen(core: CoreState, back: () -> Unit, openArtist: (It
     val playback = core.playback
     val position = livePosition(playback, step = 150)
     var scrub by remember(playback.uri, playback.deviceId, playback.changingTrack) { mutableStateOf<Float?>(null) }
-    var releasedSeek by remember(playback.uri, playback.deviceId, playback.changingTrack) { mutableStateOf<Int?>(null) }
-    LaunchedEffect(releasedSeek, playback.revision, playback.seeking) {
-        val requested = releasedSeek ?: return@LaunchedEffect
-        if (playback.positionMs == requested || (!playback.seeking && abs(playback.positionMs - requested) <= 500)) {
+    var releasedSeek by remember(playback.uri, playback.deviceId, playback.changingTrack, playback.revision) {
+        mutableStateOf<Int?>(null)
+    }
+    LaunchedEffect(releasedSeek) {
+        if (releasedSeek != null) {
+            delay(500)
             releasedSeek = null
         }
     }
-    LaunchedEffect(releasedSeek) {
-        if (releasedSeek == null) return@LaunchedEffect
-        delay(1500)
-        releasedSeek = null
-    }
+
     val track = playback.item()
     val hasTrack = playback.uri.isNotEmpty()
     val backdrop = artworkColor(playback.artwork)
@@ -314,14 +315,15 @@ internal fun NowPlayingScreen(core: CoreState, back: () -> Unit, openArtist: (It
         val duration = playback.durationMs.coerceAtLeast(1)
         val shown = releasedSeek ?: position
         key(playback.uri, playback.deviceId, playback.changingTrack) {
-            ThinSlider(shown.toFloat() / duration, playback.canSeek, "Song position", { scrub = it }) {
+            ThinSlider(shown.toFloat() / duration, playback.canSeek && !playback.changingTrack, "Song position", { scrub = it }) {
                 val requested = (it * duration).toInt().coerceIn(0, duration - 1)
                 releasedSeek = requested
                 Core.seekLyric(playback.uri, requested)
             }
         }
         Row(Modifier.fillMaxWidth()) {
-            Text(clockText(scrub?.let { (it * duration).toInt() } ?: shown), fontSize = 12.sp, color = Palette.text.copy(alpha = 0.7f))
+            Text(clockText(scrub?.let { (it * duration).toInt() } ?: shown), fontSize = 12.sp,
+                color = Palette.text.copy(alpha = 0.7f))
             if (playback.seeking) {
                 Text("Seeking…", Modifier.padding(start = 8.dp), fontSize = 12.sp, color = Palette.muted)
             }
@@ -341,12 +343,16 @@ internal fun NowPlayingScreen(core: CoreState, back: () -> Unit, openArtist: (It
             Box(Modifier.size(68.dp).clip(CircleShape).background(Palette.text)
                 .clickable(role = Role.Button) { Core.action(BuildConfig.ACTION_TOGGLE_PLAYBACK) }
                 .semantics { contentDescription = when {
-                    playback.changingTrack -> "Switching track"
+                    playback.loading -> "Switching track"
                     playback.playing -> "Pause"
                     else -> "Play"
                 } },
                 contentAlignment = Alignment.Center) {
-                DesktopIcon(if (playback.playing) BuildConfig.ICON_PAUSE else BuildConfig.ICON_PLAY, 28.dp, Color.Black)
+                if (playback.loading) {
+                    CircularProgressIndicator(Modifier.size(24.dp), color = Color.Black, strokeWidth = 2.dp)
+                } else {
+                    DesktopIcon(if (playback.playing) BuildConfig.ICON_PAUSE else BuildConfig.ICON_PLAY, 28.dp, Color.Black)
+                }
             }
             IconControl(BuildConfig.ICON_NEXT, "Next", 30.dp, Palette.text, enabled = hasTrack && playback.canNext) {
                 Core.action(BuildConfig.ACTION_NEXT)
@@ -564,12 +570,23 @@ internal fun QueueScreen(core: CoreState, actions: SongActions) {
 
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) { QueueHeading(if (queue.queued > 0) "Next in queue" else "Next up") }
+                Box(Modifier.weight(1f)) {
+                    QueueHeading(when {
+                        queue.loading -> "Loading recommendations…"
+                        queue.queued > 0 -> "Next in queue"
+                        else -> "Next up"
+                    })
+                }
 
                 if (queue.queued > 0) {
                     TextButton(onClick = Core::clearQueue) { Text("Clear queue", color = Palette.muted) }
                 }
             }
+        }
+
+        if (queue.loading) {
+            items(5) { SongRow(null, actions) {} }
+            return@LazyColumn
         }
 
         if (queue.total == 0) {

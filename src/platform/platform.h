@@ -18,6 +18,8 @@ bool platform_random(unsigned char *out, size_t size);
 bool platform_sha256(const char *text, unsigned char out[32]);
 uint64_t platform_seconds(void);
 uint64_t platform_milliseconds(void);
+/* Wall-clock Unix time in milliseconds, for timestamps from other processes. */
+uint64_t platform_unix_milliseconds(void);
 void platform_sleep(unsigned milliseconds);
 void platform_wipe(void *data, size_t size);
 bool platform_http(const char *method, const char *url, const char *token, const char *body, bool form,
@@ -55,4 +57,10 @@ typedef intptr_t Listener;
 Listener loopback_open(void);
 bool loopback_authorize(Listener listener, const char *state, char *code, size_t capacity);
 void loopback_close(Listener listener);
+
+/* Client connections to a local service on 127.0.0.1. Receive returns bytes read, 0 on timeout, -1 when closed. */
+Listener loopback_connect(unsigned port);
+bool loopback_send(Listener socket, const void *data, size_t size);
+int loopback_receive(Listener socket, void *data, size_t capacity, unsigned timeout_ms);
+unsigned loopback_free_port(void);
 #endif
