@@ -105,7 +105,8 @@ python3 tests/preview_linux.py build/native_spotify /tmp/opencode/native-preview
 ```
 
 Both helpers use `NATIVE_CONTROLLER_OFFLINE=1` to avoid restoring credentials.
-See [screenshot capture details](screenshots/README.md) for renderer fixtures.
+Use `NATIVE_RENDER_OUTPUT` when running CTest to save Linux renderer fixtures to
+an existing directory.
 
 ## Authentication notes
 

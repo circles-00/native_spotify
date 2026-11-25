@@ -7,19 +7,18 @@ rendered desktop UI. No Electron, WebView, GTK or Qt.
 
 [Get started](#get-started) · [Build](docs/BUILDING.md) · [Android](android/README.md) · [Screenshots](docs/screenshots/README.md)
 
-![Native desktop client with a resizable library and queue panel](docs/screenshots/desktop-home-queue.png)
+![Native Spotify on Windows showing playlists, recently played albums and synced lyrics](docs/screenshots/desktop-windows.png)
 
-*Linux native renderer, using offline test fixtures—not a live Spotify account.
-The screenshots show the actual client UI, not mockups.*
+*Windows desktop client with a collapsed library, recently played albums and synced lyrics.*
 
 <details>
 <summary>More screenshots</summary>
 
-| Search | Album view |
+| Album view | Artist view |
 | --- | --- |
-| ![Search with filters, top result and artist cards](docs/screenshots/desktop-search.png) | ![Album details and track list](docs/screenshots/desktop-album.png) |
+| ![Deadwing album details, track list and queue](docs/screenshots/desktop-album.png) | ![Porcupine Tree artist page with popular tracks](docs/screenshots/desktop-artist.png) |
 
-[Login screen](docs/screenshots/desktop-login.png) · [Capture details](docs/screenshots/README.md)
+![Fullscreen synced lyrics](docs/screenshots/desktop-lyrics.png)
 
 </details>
 
@@ -82,10 +81,7 @@ storage on Android—never a plaintext credential fallback. Lyrics lookup sends
 track metadata to LRCLIB, not Spotify credentials. On desktop, Soloist receives
 its key as a process argument; Linux users should consider `/proc` visibility.
 
-Builds, automated tests and offline screenshots do not establish live playback
-verification. Account consent and Soloist pairing require manual testing;
-cross-building Windows is not Windows runtime verification. Spotify's
-[Developer Policy](https://developer.spotify.com/policy) also applies.
+Spotify's [Developer Policy](https://developer.spotify.com/policy) also applies.
 
 ## Development
 
@@ -95,3 +91,8 @@ OS adapters in `src/platform/`, and the Android frontend in `android/`.
 See [building and testing](docs/BUILDING.md), [Android development](android/README.md)
 and the [visual references](design/REFERENCES.md). Follow `.clang-format` and keep
 OS/UI dependencies out of the shared core.
+
+## License
+
+[MIT](LICENSE). Bundled dependencies and fonts retain their respective licenses.
+Spotify artwork, trademarks and other third-party content are not covered by this license.
