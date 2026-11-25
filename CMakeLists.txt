@@ -61,7 +61,7 @@ if(WIN32)
   target_sources(core PRIVATE src/platform/win32_system.c src/platform/win32_image.c src/platform/win32_engine.c)
   target_compile_definitions(core PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0a00)
   target_link_libraries(core PUBLIC winhttp bcrypt advapi32 shell32 ws2_32 ole32 windowscodecs uuid)
-  set(NATIVE_UI src/platform/win32_window.c src/platform/win32_canvas.c)
+  set(NATIVE_UI src/platform/win32_window.c src/platform/win32_canvas.c src/platform/win32_media.c)
   set(NATIVE_RC "${CMAKE_CURRENT_BINARY_DIR}/native_spotify.rc")
   file(WRITE "${NATIVE_RC}" "1 ICON \"${CMAKE_CURRENT_SOURCE_DIR}/assets/native_spotify.ico\"\n")
 

@@ -3,7 +3,7 @@
 
 #include "scene.h"
 
-typedef enum { UI_CURSOR_ARROW, UI_CURSOR_HAND, UI_CURSOR_IBEAM } UiCursor;
+typedef enum { UI_CURSOR_ARROW, UI_CURSOR_HAND, UI_CURSOR_IBEAM, UI_CURSOR_RESIZE } UiCursor;
 
 typedef enum {
     UI_SHORTCUT_NONE,

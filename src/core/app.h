@@ -76,8 +76,12 @@ typedef struct {
 
 const CatalogItem *list_row(const ListView *list, unsigned index);
 
+/* Sidebar widths are in layout units; 0 keeps the default width for the window size. */
 typedef struct {
     bool search_radio;
+    float library_width;
+    float panel_width;
+    bool library_collapsed;
 } AppSettings;
 
 typedef struct {
@@ -183,6 +187,7 @@ void app_engine_dashboard(void);
 void app_engine_forget(void);
 void app_engine_stop(void);
 bool app_set_search_radio(bool enabled);
+void app_set_layout(float library_width, bool library_collapsed, float panel_width);
 void app_snapshot_into(View *out);
 View app_snapshot(void);
 

@@ -6,6 +6,7 @@
 #include "platform.h"
 #include "ui.h"
 #include "win32_canvas.h"
+#include "win32_media.h"
 
 #include <windows.h>
 #include <windowsx.h>
@@ -36,6 +37,7 @@ static LONG_PTR windowed_style;
 static WINDOWPLACEMENT windowed_placement;
 
 enum { THUMB_PREVIOUS = 1, THUMB_PLAYBACK, THUMB_NEXT, THUMB_PAUSE_ICON };
+enum { WM_MEDIA_ACTION = WM_APP + 1 };
 
 static const struct {
     Icon icon;
@@ -319,9 +321,10 @@ static void layout(void) {
 
 static void apply_cursor(void) {
     UiCursor cursor = ui_controller_cursor(&controller);
-    LPCWSTR resource = cursor == UI_CURSOR_IBEAM  ? IDC_IBEAM
-                       : cursor == UI_CURSOR_HAND ? IDC_HAND
-                                                  : IDC_ARROW;
+    LPCWSTR resource = cursor == UI_CURSOR_IBEAM    ? IDC_IBEAM
+                       : cursor == UI_CURSOR_HAND   ? IDC_HAND
+                       : cursor == UI_CURSOR_RESIZE ? IDC_SIZEWE
+                                                    : IDC_ARROW;
     SetCursor(LoadCursorW(NULL, resource));
 }
 
@@ -554,6 +557,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
                     break;
                 }
             }
+
+            win32_media_start(hwnd, WM_MEDIA_ACTION);
         }
 
         ui_controller_init(&controller, GetTickCount64());
@@ -565,9 +570,37 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         InterlockedExchange(&wake_pending, 0);
         layout();
         update_thumb_buttons();
+        win32_media_update(controller.snapshot);
         sync_timer();
         animate();
         return 0;
+
+    case WM_MEDIA_ACTION:
+        app_action((Action)wparam);
+        return 0;
+
+    case WM_APPCOMMAND: {
+        // With system media controls on, media keys reach them through the shell; handling them here too
+        // would run each press twice.
+        if (win32_media_active()) {
+            break;
+        }
+
+        short command = GET_APPCOMMAND_LPARAM(lparam);
+        Action action = command == APPCOMMAND_MEDIA_NEXTTRACK       ? ACTION_NEXT
+                        : command == APPCOMMAND_MEDIA_PREVIOUSTRACK ? ACTION_PREVIOUS
+                        : command == APPCOMMAND_MEDIA_PLAY          ? ACTION_PLAY
+                        : command == APPCOMMAND_MEDIA_PAUSE || command == APPCOMMAND_MEDIA_STOP
+                            ? ACTION_PAUSE
+                            : ACTION_TOGGLE_PLAYBACK;
+
+        if (command != APPCOMMAND_MEDIA_PLAY_PAUSE && action == ACTION_TOGGLE_PLAYBACK) {
+            break;
+        }
+
+        app_action(action);
+        return TRUE;
+    }
 
     case WM_COMMAND:
         if (HIWORD(wparam) == THBN_CLICKED && !lparam) {
@@ -764,6 +797,13 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
             }
         }
 
+        // Holding Space must not toggle playback over and over.
+        bool repeated = (lparam & (1 << 30)) != 0;
+
+        if (wparam == VK_SPACE && repeated && !ui_controller_is_editing(&controller)) {
+            return 0;
+        }
+
         SceneKey mapped;
 
         if (mapped_key(wparam, &mapped)) {
@@ -813,6 +853,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
     }
 
     case WM_DESTROY:
+        win32_media_stop();
+
         if (taskbar) {
             ITaskbarList3_Release(taskbar);
             taskbar = NULL;

@@ -64,6 +64,11 @@ bool ui_controller_is_editing(const UiController *controller) {
 }
 
 UiCursor ui_controller_cursor(const UiController *controller) {
+    // A resize keeps its cursor while the pointer runs ahead of the edge.
+    if (scene_resize_hit(controller->scene.dragging) || scene_resize_hit(controller->scene.hot)) {
+        return UI_CURSOR_RESIZE;
+    }
+
     if (controller->scene.hot == HIT_SEARCH || controller->scene.hot == HIT_LIST_FILTER) {
         return UI_CURSOR_IBEAM;
     }

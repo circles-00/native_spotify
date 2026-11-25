@@ -57,8 +57,43 @@ void scene_motion(Scene *scene, float x) {
     }
 }
 
+static float clamp_edge(float value, float minimum, float maximum) {
+    if (value > maximum) {
+        value = maximum;
+    }
+
+    return value < minimum ? minimum : value;
+}
+
+/* Stored widths stay within what layout can show, so dragging back never has a dead zone. */
+static void resize_motion(Scene *scene, float x) {
+    float edge = x - scene->resize_grab;
+
+    if (scene->dragging == HIT_PANEL_RESIZE) {
+        float maximum = scene_panel_max(scene->width, scene->sidebar.w);
+        scene->panel_width = clamp_edge(scene->width - edge, PANEL_MIN_WIDTH, maximum);
+        return;
+    }
+
+    // Past the midpoint between the collapsed strip and the narrowest library, the library snaps.
+    scene->library_collapsed = edge < (LIBRARY_COLLAPSED_WIDTH + LIBRARY_MIN_WIDTH) / 2;
+
+    if (!scene->library_collapsed) {
+        scene->library_width = clamp_edge(edge, LIBRARY_MIN_WIDTH, scene_library_max(scene->width));
+    }
+}
+
+void scene_save_layout(const Scene *scene) {
+    app_set_layout(scene->library_width, scene->library_collapsed, scene->panel_width);
+}
+
 void scene_pointer_motion(Scene *scene, float x, float y) {
     scene_motion(scene, x);
+
+    if (scene_resize_hit(scene->dragging)) {
+        resize_motion(scene, x);
+        return;
+    }
 
     if (scene->dragging < HIT_SCROLL_MAIN || scene->dragging > HIT_SCROLL_PANEL) {
         return;
@@ -121,7 +156,7 @@ void scene_press(Scene *scene, const View *view, float x, float y, uint64_t now)
         return;
     }
 
-    if (target < HIT_SCROLL_MAIN || target > HIT_SCROLL_PANEL) {
+    if ((target < HIT_SCROLL_MAIN || target > HIT_SCROLL_PANEL) && !scene_resize_hit(target)) {
         HitId tracks[] = {HIT_SCROLL_MAIN, HIT_SCROLL_LIBRARY, HIT_SCROLL_PANEL};
 
         for (unsigned i = 0; i < 3; ++i) {
@@ -166,6 +201,15 @@ void scene_press(Scene *scene, const View *view, float x, float y, uint64_t now)
         return;
     }
 
+    // Grab the edge where it was pressed so it does not jump to the pointer.
+    if (scene_resize_hit(target)) {
+        float edge = target == HIT_PANEL_RESIZE ? scene->side_panel.x : scene->sidebar.x + scene->sidebar.w;
+        scene->dragging = target;
+        scene->focus = HIT_NONE;
+        scene->resize_grab = x - edge;
+        return;
+    }
+
     if (target >= HIT_SCROLL_MAIN && target <= HIT_SCROLL_PANEL) {
         Rect thumb = scene->hits[target].rect;
         scene->dragging = target;
@@ -182,6 +226,10 @@ void scene_release(Scene *scene, const View *view, float x, float y) {
 
     if (scene->dragging == HIT_VOLUME) {
         app_volume(scene->draft.volume);
+    }
+
+    if (scene_resize_hit(scene->dragging)) {
+        scene_save_layout(scene);
     }
 
     if (scene->dragging == HIT_NONE && scene->pressed == scene_hit(scene, x, y)) {
@@ -489,7 +537,8 @@ bool scene_key_mods(Scene *scene, const View *view, SceneKey key, bool shift, bo
         for (unsigned i = 1; i < HIT_COUNT; ++i) {
             int next = ((int)scene->focus + (shift ? -(int)i : (int)i) + HIT_COUNT) % HIT_COUNT;
 
-            if (scene->hits[next].enabled && (next < HIT_QUEUE_ROW_FIRST || next > HIT_QUEUE_ROW_LAST)) {
+            if (scene->hits[next].enabled && (next < HIT_QUEUE_ROW_FIRST || next > HIT_QUEUE_ROW_LAST) &&
+                !scene_resize_hit((HitId)next)) {
                 scene->focus = (HitId)next;
                 scene->search_history_open =
                     next == HIT_SEARCH || next == HIT_SEARCH_CLEAR || next >= HIT_HISTORY_FIRST;
@@ -605,9 +654,20 @@ bool scene_key_mods(Scene *scene, const View *view, SceneKey key, bool shift, bo
             return true;
         }
 
-        if (scene->focus == HIT_SEARCH) {
+        // Space types into the field through the text path; it must not also reach the shortcuts below.
+        if (scene->focus == HIT_SEARCH || key == KEY_SPACE) {
             return true;
         }
+    }
+
+    // Like Spotify, Space toggles playback anywhere outside a text field instead of pressing the focus.
+    if (key == KEY_SPACE) {
+        if (scene->login_screen || scene->intro_screen || scene->setup_popup || scene->menu.open) {
+            return false;
+        }
+
+        app_action(ACTION_TOGGLE_PLAYBACK);
+        return true;
     }
 
     if ((scene->focus == HIT_SEEK || scene->focus == HIT_VOLUME) && (key == KEY_LEFT || key == KEY_RIGHT)) {

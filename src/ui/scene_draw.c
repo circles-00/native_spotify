@@ -346,8 +346,87 @@ static void header(Scene *scene, const View *view, Canvas *canvas) {
     }
 }
 
+static bool playlist_playing(const View *view, const CatalogItem *item) {
+    return item->id[0] && !strncmp(view->playback.context_uri, "spotify:playlist:", 17) &&
+           !strcmp(item->id, view->playback.context_uri + 17);
+}
+
+static bool playlist_open(const Scene *scene, const View *view, const CatalogItem *item) {
+    return !scene->home &&
+           (scene->section == BROWSE_PLAYLIST_TRACKS || scene->section == BROWSE_ALBUM_TRACKS) &&
+           item->id[0] && !strcmp(item->id, view->list.request.id);
+}
+
+/* The collapsed library: centred icons and artwork only, like Spotify's narrow library. */
+static void collapsed_library(Scene *scene, const View *view, Canvas *canvas) {
+    Rect toggle = scene->hits[HIT_LIBRARY_COLLAPSE].rect;
+
+    if (scene->hover[HIT_LIBRARY_COLLAPSE] > .01f) {
+        canvas->box(canvas->context, toggle, 6,
+                    color_mix(DARK_CHROME, DARK_HOVER, scene->hover[HIT_LIBRARY_COLLAPSE]));
+    }
+
+    canvas_icon(canvas, ICON_LIBRARY, (Rect){toggle.x + (toggle.w - 19) / 2, toggle.y + 6, 19, 19},
+                color_mix(MUTED, WHITE, scene->hover[HIT_LIBRARY_COLLAPSE]));
+
+    Rect liked = scene->hits[HIT_TRACKS].rect;
+    bool liked_active = !scene->home && scene->section == BROWSE_SAVED_TRACKS;
+
+    if (liked_active || scene->hover[HIT_TRACKS] > .01f) {
+        canvas->box(
+            canvas->context, liked, 6,
+            color_mix(liked_active ? DARK_SELECTED : DARK_CHROME, DARK_HOVER, scene->hover[HIT_TRACKS]));
+    }
+
+    artwork(canvas, (Rect){liked.x + (liked.w - 39) / 2, liked.y + 7, 39, 39}, 0, false, 6);
+    canvas->clip(canvas->context, scene->library_rows, 0);
+
+    for (unsigned i = 0; i < 24; ++i) {
+        HitId id = (HitId)(HIT_LIBRARY_FIRST + i);
+        Rect row = scene->hits[id].rect;
+        const CatalogItem *item = row.h > 0 ? list_row(&view->playlists, scene->library_first + i) : NULL;
+
+        if (!item) {
+            continue;
+        }
+
+        bool active = playlist_open(scene, view, item);
+
+        if (active || scene->hover[id] > .01f) {
+            canvas->box(canvas->context, row, 6,
+                        color_mix(active ? DARK_SELECTED : DARK_CHROME, DARK_HOVER, scene->hover[id]));
+        }
+
+        Rect cover = {row.x + (row.w - 39) / 2, row.y + 7, 39, 39};
+        draw_rounded_art(canvas, item->artwork, cover, 6, 2, false);
+
+        if (playlist_playing(view, item)) {
+            canvas->box(canvas->context, (Rect){cover.x + cover.w - 15, cover.y + cover.h - 15, 18, 18}, 9,
+                        DARK_CHROME);
+            canvas_icon(canvas, ICON_VOLUME, (Rect){cover.x + cover.w - 13, cover.y + cover.h - 13, 14, 14},
+                        GREEN);
+        }
+    }
+
+    canvas->unclip(canvas->context);
+}
+
+/* A thin line marks a draggable edge while it is hovered or dragged. */
+static void resize_edge(Scene *scene, Canvas *canvas, HitId id, float x) {
+    float hover = scene->dragging == id ? 1 : scene->hover[id];
+
+    if (!scene->hits[id].enabled || hover <= .01f) {
+        return;
+    }
+
+    Rect handle = scene->hits[id].rect;
+    canvas->box(canvas->context, (Rect){x - 1, handle.y, 2, handle.h}, 1,
+                color_mix(DARK_BORDER, 0x9a9a9a, hover));
+}
+
 static void sidebar(Scene *scene, const View *view, Canvas *canvas) {
     Rect bounds = scene->sidebar;
+    bool collapsed = scene->library_collapsed;
 
     canvas->box(canvas->context, bounds, 0, DARK_CHROME);
     const HitId nav_ids[] = {HIT_HOME, HIT_SEARCH_NAV};
@@ -363,13 +442,30 @@ static void sidebar(Scene *scene, const View *view, Canvas *canvas) {
         }
 
         Color color = active ? WHITE : MUTED;
-        canvas_icon(canvas, nav_icons[i], (Rect){row.x + 10, row.y + 9, 19, 19}, color);
-        canvas->text(canvas->context, nav_labels[i], (Rect){row.x + 40, row.y, row.w - 46, row.h}, 13,
-                     TEXT_BOLD | TEXT_VCENTER, color);
+        float icon_x = collapsed ? row.x + (row.w - 19) / 2 : row.x + 10;
+        canvas_icon(canvas, nav_icons[i], (Rect){icon_x, row.y + 9, 19, 19}, color);
+
+        if (!collapsed) {
+            canvas->text(canvas->context, nav_labels[i], (Rect){row.x + 40, row.y, row.w - 46, row.h}, 13,
+                         TEXT_BOLD | TEXT_VCENTER, color);
+        }
     }
 
     line(canvas, 14, 104, bounds.w - 26, DARK_BORDER);
-    canvas_icon(canvas, ICON_LIBRARY, (Rect){17, 118, 17, 17}, MUTED);
+
+    if (collapsed) {
+        collapsed_library(scene, view, canvas);
+        return;
+    }
+
+    Rect toggle = scene->hits[HIT_LIBRARY_COLLAPSE].rect;
+    float toggle_hover = scene->hover[HIT_LIBRARY_COLLAPSE];
+
+    if (toggle_hover > .01f) {
+        canvas->box(canvas->context, toggle, 6, color_mix(DARK_CHROME, DARK_HOVER, toggle_hover));
+    }
+
+    canvas_icon(canvas, ICON_LIBRARY, (Rect){17, 118, 17, 17}, color_mix(MUTED, WHITE, toggle_hover));
     text(canvas, "Library", (Rect){44, 115, bounds.w - 89, 22}, 13, true, WHITE);
     button(scene, canvas, HIT_REFRESH, NULL, ICON_REFRESH, false, DARK_CHROME, 16, true);
 
@@ -417,13 +513,8 @@ static void sidebar(Scene *scene, const View *view, Canvas *canvas) {
                 continue;
             }
 
-            bool playing_context = item->id[0] &&
-                                   !strncmp(view->playback.context_uri, "spotify:playlist:", 17) &&
-                                   !strcmp(item->id, view->playback.context_uri + 17);
-            bool active =
-                !scene->home &&
-                (scene->section == BROWSE_PLAYLIST_TRACKS || scene->section == BROWSE_ALBUM_TRACKS) &&
-                item->id[0] && !strcmp(item->id, view->list.request.id);
+            bool playing_context = playlist_playing(view, item);
+            bool active = playlist_open(scene, view, item);
 
             if (active || scene->hover[id] > .01f) {
                 canvas->box(canvas->context, row, 6,
@@ -1005,7 +1096,7 @@ static void search_history(Scene *scene, const View *view, Canvas *canvas) {
     Rect list = {panel.x + 5, panel.y + 34, panel.w - 10, scene->search_history_scroll.viewport};
     canvas->clip(canvas->context, list, 0);
 
-    for (unsigned i = 0; i < view->search_history_count; ++i) {
+    for (unsigned i = 0; i < view->search_history_count && i < DESKTOP_SEARCH_HISTORY_LIMIT; ++i) {
         HitId id = (HitId)(HIT_HISTORY_FIRST + i);
         HitId like = (HitId)(HIT_HISTORY_LIKE_FIRST + i);
         HitId remove = (HitId)(HIT_HISTORY_REMOVE_FIRST + i);
@@ -1022,7 +1113,6 @@ static void search_history(Scene *scene, const View *view, Canvas *canvas) {
             canvas->box(canvas->context, row, 5, DARK_HOVER);
         }
 
-        artwork_pin(item->artwork);
         Rect art = scene_song_art(scene, id);
         draw_rounded_art(canvas, item->artwork, art, 4, i, false);
         canvas_song_play(canvas, art, 4, scene->hover[id], item_can_play(item));
@@ -1049,7 +1139,19 @@ static void search_history(Scene *scene, const View *view, Canvas *canvas) {
 }
 
 void scene_draw(Scene *scene, const View *view, Canvas *canvas) {
-    artwork_begin_frame();
+    const char *history_art[DESKTOP_SEARCH_HISTORY_LIMIT];
+    unsigned history_count = 0;
+
+    if (scene->search_history_open && scene->search_history_panel.w > 0) {
+        for (unsigned i = 0; i < view->search_history_count && i < DESKTOP_SEARCH_HISTORY_LIMIT; ++i) {
+            if (scene->hits[HIT_HISTORY_FIRST + i].rect.w > 0 && view->search_history[i].artwork[0]) {
+                history_art[history_count++] = view->search_history[i].artwork;
+            }
+        }
+    }
+
+    // The overlay draws last; protect its covers before background artwork can evict them.
+    artwork_begin_frame(history_art, history_count);
     artwork_pin(view->playback.artwork);
     artwork_pin(scene->collection_artwork);
     artwork_pin(view->details.item.artwork);
@@ -1187,6 +1289,8 @@ void scene_draw(Scene *scene, const View *view, Canvas *canvas) {
     player(scene, view, canvas);
     song_heart(scene, canvas, HIT_PLAYER_LIKE, view->playback_liked);
     panel_scene_draw(scene, view, canvas);
+    resize_edge(scene, canvas, HIT_LIBRARY_RESIZE, scene->sidebar.x + scene->sidebar.w);
+    resize_edge(scene, canvas, HIT_PANEL_RESIZE, scene->side_panel.x);
     search_history(scene, view, canvas);
     scene_scrollbars(scene, canvas);
     setup(scene, view, canvas);

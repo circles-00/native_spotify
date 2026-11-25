@@ -31,9 +31,27 @@ static void load_settings(void) {
     yyjson_doc *doc = yyjson_read(text, strlen(text), 0);
     yyjson_val *root = yyjson_doc_get_root(doc);
     yyjson_val *search_radio = yyjson_obj_get(root, "search_radio");
+    yyjson_val *library_width = yyjson_obj_get(root, "library_width");
+    yyjson_val *library_collapsed = yyjson_obj_get(root, "library_collapsed");
+    yyjson_val *panel_width = yyjson_obj_get(root, "panel_width");
 
     if (yyjson_is_bool(search_radio)) {
         app_state.view.settings.search_radio = yyjson_get_bool(search_radio);
+    }
+
+    // The scene clamps widths to the window, so only reject values that are not sizes at all.
+    if (yyjson_is_num(library_width) && yyjson_get_num(library_width) >= 0 &&
+        yyjson_get_num(library_width) < 4096) {
+        app_state.view.settings.library_width = (float)yyjson_get_num(library_width);
+    }
+
+    if (yyjson_is_bool(library_collapsed)) {
+        app_state.view.settings.library_collapsed = yyjson_get_bool(library_collapsed);
+    }
+
+    if (yyjson_is_num(panel_width) && yyjson_get_num(panel_width) >= 0 &&
+        yyjson_get_num(panel_width) < 4096) {
+        app_state.view.settings.panel_width = (float)yyjson_get_num(panel_width);
     }
 
     yyjson_doc_free(doc);
@@ -47,6 +65,9 @@ static void save_settings_locked(void) {
 
     if (root) {
         yyjson_mut_obj_add_bool(doc, root, "search_radio", app_state.view.settings.search_radio);
+        yyjson_mut_obj_add_real(doc, root, "library_width", app_state.view.settings.library_width);
+        yyjson_mut_obj_add_bool(doc, root, "library_collapsed", app_state.view.settings.library_collapsed);
+        yyjson_mut_obj_add_real(doc, root, "panel_width", app_state.view.settings.panel_width);
     }
 
     char *text = yyjson_mut_write(doc, 0, NULL);
@@ -282,6 +303,24 @@ bool app_set_search_radio(bool enabled) {
     }
 
     return true;
+}
+
+/* Saved when a drag or collapse ends, not while dragging, so the file is written once per change. */
+void app_set_layout(float library_width, bool library_collapsed, float panel_width) {
+    platform_lock();
+    AppSettings *settings = &app_state.view.settings;
+    bool changed = settings->library_width != library_width ||
+                   settings->library_collapsed != library_collapsed || settings->panel_width != panel_width;
+
+    settings->library_width = library_width;
+    settings->library_collapsed = library_collapsed;
+    settings->panel_width = panel_width;
+
+    if (changed) {
+        save_settings_locked();
+    }
+
+    platform_unlock();
 }
 
 static bool valid_saved_media_uri(const char *uri) {

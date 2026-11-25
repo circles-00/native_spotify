@@ -95,14 +95,14 @@ int main(void) {
         snprintf(url, sizeof(url), "https://i.scdn.co/image/budget%u", i);
         ArtworkEntry *item = artwork_store_request(&store, url, 0);
         CHECK(item != NULL);
-        CHECK(artwork_store_evict_budget(&store, tile_bytes));
+        CHECK(artwork_store_evict_budget(&store, tile_bytes, false));
         item->state = ART_READY;
         item->image = (Image){tile_side, tile_side, malloc(tile_bytes)};
         CHECK(item->image.pixels != NULL);
         CHECK(artwork_store_bytes(&store) <= ARTWORK_BYTES_LIMIT);
     }
 
-    CHECK(artwork_store_evict_budget(&store, tile_bytes));
+    CHECK(artwork_store_evict_budget(&store, tile_bytes, false));
     CHECK(artwork_store_bytes(&store) + tile_bytes <= ARTWORK_BYTES_LIMIT);
     artwork_store_clear(&store);
     CHECK(artwork_store_bytes(&store) == 0);
@@ -150,7 +150,7 @@ int main(void) {
             break;
         }
 
-        if (!artwork_store_evict_budget(&store, tile_bytes)) {
+        if (!artwork_store_evict_budget(&store, tile_bytes, false)) {
             break;
         }
 
@@ -160,7 +160,25 @@ int main(void) {
     }
 
     CHECK(artwork_store_bytes(&store) <= ARTWORK_HARD_BYTES_LIMIT);
-    CHECK(!artwork_store_evict_budget(&store, ARTWORK_HARD_BYTES_LIMIT));
+    CHECK(!artwork_store_evict_budget(&store, ARTWORK_HARD_BYTES_LIMIT, false));
+
+    const char *history = "https://i.scdn.co/image/history";
+    ArtworkEntry *cover = artwork_store_request(&store, history, 0);
+    CHECK(cover != NULL);
+    cover->state = ART_FAILED;
+    cover->retry_ms = 30000;
+    cover->budget_failed = true;
+    artwork_store_request_priority(&store, history, 0);
+    CHECK(cover->state == ART_PENDING);
+    CHECK(artwork_store_request(&store, "https://i.scdn.co/image/background", 0));
+    CHECK(&store.entries[artwork_store_next(&store)] == cover);
+    CHECK(!artwork_store_evict_budget(&store, tile_bytes, false));
+    CHECK(artwork_store_evict_budget(&store, 5 * tile_bytes, true));
+    CHECK(!artwork_store_evict_budget(&store, 7 * tile_bytes, true));
+
+    cover->state = ART_FAILED;
+    artwork_store_request_priority(&store, history, 0);
+    CHECK(cover->state == ART_FAILED);
     artwork_store_clear(&store);
     CHECK(artwork_store_bytes(&store) == 0);
     printf("PASS: %u artwork store checks (visible pins, scroll churn, priority, byte budgets and retries)\n",

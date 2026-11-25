@@ -14,6 +14,15 @@
 #define QUEUE_VISIBLE_SLOTS 24
 #define SCENE_HISTORY_LIMIT 24
 #define HISTORY_ROW_HEIGHT 50.0f
+#define DESKTOP_SEARCH_HISTORY_LIMIT 5
+
+/* Library sidebar and right panel sizes. Dragging the library below the midpoint collapses it. */
+#define LIBRARY_COLLAPSED_WIDTH 72.0f
+#define LIBRARY_MIN_WIDTH 190.0f
+#define LIBRARY_MAX_WIDTH 420.0f
+#define PANEL_MIN_WIDTH 266.0f
+#define PANEL_MAX_WIDTH 520.0f
+#define CONTENT_MIN_WIDTH 420.0f
 
 typedef enum {
     HIT_NONE,
@@ -129,6 +138,9 @@ typedef enum {
     HIT_SORT_ALBUM,
     HIT_SORT_DURATION,
     HIT_QUEUE_CLEAR,
+    HIT_LIBRARY_COLLAPSE,
+    HIT_LIBRARY_RESIZE,
+    HIT_PANEL_RESIZE,
     HIT_HISTORY_FIRST,
     HIT_HISTORY_LAST = HIT_HISTORY_FIRST + SEARCH_HISTORY_LIMIT - 1,
     HIT_HISTORY_LIKE_FIRST,
@@ -203,6 +215,11 @@ typedef struct {
     Rect header;
     Rect sidebar, library_rows, content, search, player;
     Rect side_panel;
+    float library_width;
+    float panel_width;
+    bool library_collapsed;
+    bool layout_restored;
+    float resize_grab;
     SidePanel panel;
     unsigned panel_first;
     bool over_panel;
@@ -285,6 +302,9 @@ unsigned scene_columns(float width);
 void scene_layout(Scene *scene, const View *view, float width, float height);
 void scene_draw(Scene *scene, const View *view, Canvas *canvas);
 bool scene_contains(Rect rect, float x, float y);
+bool scene_resize_hit(HitId id);
+float scene_library_max(float width);
+float scene_panel_max(float width, float rail);
 HitId scene_hit(const Scene *scene, float x, float y);
 void scene_hover(Scene *scene, HitId hit, uint64_t now);
 bool scene_tick(Scene *scene, uint64_t now);
@@ -295,6 +315,7 @@ void scene_motion(Scene *scene, float x);
 void scene_pointer_motion(Scene *scene, float x, float y);
 void scene_scrollbars(Scene *scene, Canvas *canvas);
 void scene_release(Scene *scene, const View *view, float x, float y);
+void scene_save_layout(const Scene *scene);
 bool scene_key(Scene *scene, const View *view, SceneKey key, bool shift);
 bool scene_key_mods(Scene *scene, const View *view, SceneKey key, bool shift, bool ctrl);
 bool scene_input(Scene *scene, const char *text, size_t size);

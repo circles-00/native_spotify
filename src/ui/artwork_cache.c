@@ -37,17 +37,22 @@ static void load_artwork(void *argument) {
 
         if (generation == revision && store.entries[slot].state == ART_LOADING &&
             !strcmp(store.entries[slot].url, url)) {
+            store.entries[slot].budget_failed = false;
+
             if (ok && image.pixels) {
                 free(store.entries[slot].image.pixels);
                 store.entries[slot].image = (Image){0};
                 size_t incoming = (size_t)image.width * image.height * sizeof(uint32_t);
 
-                if (artwork_store_evict_budget(&store, incoming)) {
+                bool priority = store.entries[slot].priority_frame == store.frame;
+
+                if (artwork_store_evict_budget(&store, incoming, priority)) {
                     store.entries[slot].image = image;
                     store.entries[slot].state = ART_READY;
                     image.pixels = NULL;
                 } else {
                     store.entries[slot].state = ART_FAILED;
+                    store.entries[slot].budget_failed = !priority;
                 }
             } else {
                 store.entries[slot].state = ART_FAILED;
@@ -74,9 +79,18 @@ void artwork_reset(unsigned session_revision) {
     platform_unlock();
 }
 
-void artwork_begin_frame(void) {
+void artwork_begin_frame(const char *const *priority_urls, unsigned count) {
     platform_lock();
     ++store.frame;
+
+    for (unsigned i = 0; i < count; ++i) {
+        artwork_store_pin(&store, priority_urls[i]);
+    }
+
+    for (unsigned i = 0; i < count; ++i) {
+        artwork_store_request_priority(&store, priority_urls[i], platform_milliseconds());
+    }
+
     platform_unlock();
 }
 

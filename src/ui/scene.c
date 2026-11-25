@@ -19,7 +19,6 @@ void scene_init(Scene *scene) {
     memset(scene, 0, sizeof(*scene));
     scene->home = true;
     scene->entrance = 1;
-    scene->focus = HIT_SEARCH;
     scene->last_selected = -1;
 }
 
@@ -230,7 +229,8 @@ HitId scene_hit(const Scene *scene, float x, float y) {
         if (scene->panel != PANEL_NONE && !scene->setup_popup && scene_contains(scene->side_panel, x, y) &&
             i != HIT_PANEL_CLOSE && i != HIT_PANEL_QUEUE && i != HIT_PANEL_PREVIOUS && i != HIT_PANEL_PLAY &&
             i != HIT_PANEL_NEXT && i != HIT_SCROLL_PANEL && i != HIT_TRANSFER && i != HIT_QUEUE_CLEAR &&
-            (i < HIT_DEVICE_FIRST || i > HIT_DEVICE_LAST) && (i < HIT_QUEUE_ROW_FIRST || i > HIT_QUEUE_LIKE_LAST) &&
+            i != HIT_PANEL_RESIZE && (i < HIT_DEVICE_FIRST || i > HIT_DEVICE_LAST) &&
+            (i < HIT_QUEUE_ROW_FIRST || i > HIT_QUEUE_LIKE_LAST) &&
             (i < HIT_LYRICS_FULLSCREEN || i > HIT_LYRIC_LAST) &&
             (i < HIT_PANEL_RECENT_TAB || i > HIT_PANEL_RECENT_LAST)) {
             continue;
@@ -322,12 +322,14 @@ static void layout_search_history(Scene *scene, const View *view) {
         return;
     }
 
+    unsigned count = view->search_history_count < DESKTOP_SEARCH_HISTORY_LIMIT ? view->search_history_count
+                                                                               : DESKTOP_SEARCH_HISTORY_LIMIT;
     float y = scene->search.y + scene->search.h + 6;
-    float extent = view->search_history_count ? view->search_history_count * HISTORY_ROW_HEIGHT : 36;
+    float extent = count ? count * HISTORY_ROW_HEIGHT : 36;
     float available = scene->player.y - y - 48;
     float viewport = extent < available ? extent : available;
 
-    if (viewport < HISTORY_ROW_HEIGHT && view->search_history_count) {
+    if (viewport < HISTORY_ROW_HEIGHT && count) {
         return;
     }
 
@@ -335,7 +337,7 @@ static void layout_search_history(Scene *scene, const View *view) {
     Rect panel = {scene->search.x, y, scene->search.w, viewport + 42};
     scene->search_history_panel = panel;
 
-    for (unsigned i = 0; i < view->search_history_count; ++i) {
+    for (unsigned i = 0; i < count; ++i) {
         Rect row = {panel.x + 6, panel.y + 34 + i * HISTORY_ROW_HEIGHT - scene->search_history_scroll.offset,
                     panel.w - 17, HISTORY_ROW_HEIGHT};
         float top = panel.y + 34;
@@ -526,6 +528,44 @@ static void layout_popups(Scene *scene, const View *view, float width, float hei
     }
 }
 
+bool scene_resize_hit(HitId id) {
+    return id == HIT_LIBRARY_RESIZE || id == HIT_PANEL_RESIZE;
+}
+
+static float clamp_width(float value, float minimum, float maximum) {
+    if (value > maximum) {
+        value = maximum;
+    }
+
+    return value < minimum ? minimum : value;
+}
+
+/* The library stays narrow enough that the main view remains usable. */
+float scene_library_max(float width) {
+    float maximum = width * .35f;
+    return maximum < LIBRARY_MAX_WIDTH ? maximum : LIBRARY_MAX_WIDTH;
+}
+
+/* A docked panel shares the row with the main view; an overlaid one only has to fit the window. */
+float scene_panel_max(float width, float rail) {
+    float room = width >= 1080 ? width - rail - CONTENT_MIN_WIDTH : width - rail;
+    return room < PANEL_MAX_WIDTH ? room : PANEL_MAX_WIDTH;
+}
+
+static float library_width(const Scene *scene, float width) {
+    if (scene->library_collapsed) {
+        return LIBRARY_COLLAPSED_WIDTH;
+    }
+
+    float preferred = scene->library_width > 0 ? scene->library_width : width < 1080 ? 190 : 223;
+    return clamp_width(preferred, LIBRARY_MIN_WIDTH, scene_library_max(width));
+}
+
+static float panel_width(const Scene *scene, float width, float rail) {
+    float preferred = scene->panel_width > 0 ? scene->panel_width : width < 1080 ? 266 : 320;
+    return clamp_width(preferred, PANEL_MIN_WIDTH, scene_panel_max(width, rail));
+}
+
 void scene_layout(Scene *scene, const View *view, float width, float height) {
     if (scene->session_revision != view->session_revision) {
         scene->session_revision = view->session_revision;
@@ -567,12 +607,21 @@ void scene_layout(Scene *scene, const View *view, float width, float height) {
         scene->entrance = 1;
     }
 
+    if (!scene->layout_restored) {
+        scene->layout_restored = true;
+        scene->library_width = view->settings.library_width;
+        scene->library_collapsed = view->settings.library_collapsed;
+        scene->panel_width = view->settings.panel_width;
+    }
+
     scene->width = width;
     scene->height = height;
-    float rail = width < 1080 ? 190 : 223;
-    float panel = width < 1080 ? 266 : 320;
+    bool docked = width >= 1080;
+    float rail = library_width(scene, width);
+    float panel = panel_width(scene, width, rail);
+    float library_top = scene->library_collapsed ? 210 : 246;
     scene->sidebar = (Rect){0, 0, rail, height - 78};
-    scene->library_rows = (Rect){0, 246, rail, height - 331};
+    scene->library_rows = (Rect){0, library_top, rail, height - 85 - library_top};
     scene->header = (Rect){0, 0, width, 54};
     scene->content = (Rect){rail, scene->header.h, width - rail, height - 78 - scene->header.h};
     scene->side_panel = (Rect){width - panel, scene->header.h, panel, scene->content.h};
@@ -581,7 +630,7 @@ void scene_layout(Scene *scene, const View *view, float width, float height) {
         scene->side_panel = (Rect){0, 0, width, height - 78};
     }
 
-    if (scene->panel != PANEL_NONE && width >= 1080) {
+    if (scene->panel != PANEL_NONE && docked) {
         scene->content.w -= panel;
     }
 
@@ -628,8 +677,9 @@ void scene_layout(Scene *scene, const View *view, float width, float height) {
     scene->intro_screen = view->loading_intro;
     scene->login_screen = !scene->intro_screen && !view->authenticated;
 
+    // Nothing starts focused, so Space controls playback until the listener picks a field.
     if (was_login && !scene->login_screen && !scene->intro_screen) {
-        scene->focus = HIT_SEARCH;
+        scene->focus = HIT_NONE;
     }
 
     // The app asks for the setup panel when playback needs Soloist and Soloist needs the listener.
@@ -686,10 +736,14 @@ void scene_layout(Scene *scene, const View *view, float width, float height) {
     hit(scene, HIT_PROFILE, avatar, true);
     hit(scene, HIT_PLAYING_ON, playing_on, playing_on.w > 0);
 
-    hit(scene, HIT_PLAYLISTS, (Rect){11, 149, 66, 27}, true);
-    hit(scene, HIT_ALBUMS, (Rect){82, 149, 63, 27}, true);
-    hit(scene, HIT_ARTISTS, (Rect){150, 149, rail < 200 ? 38 : 58, 27}, true);
-    hit(scene, HIT_TRACKS, (Rect){11, 192, rail - 22, LIBRARY_ROW_HEIGHT}, true);
+    // A collapsed library keeps only artwork: no filters, no refresh, and Liked Songs moves up.
+    bool expanded = !scene->library_collapsed;
+    hit(scene, HIT_LIBRARY_COLLAPSE, (Rect){11, 112, expanded ? rail - 50 : rail - 22, 30}, true);
+    hit(scene, HIT_PLAYLISTS, (Rect){11, 149, 66, 27}, expanded);
+    hit(scene, HIT_ALBUMS, (Rect){82, 149, 63, 27}, expanded);
+    hit(scene, HIT_ARTISTS, (Rect){150, 149, rail < 200 ? 38 : 58, 27}, expanded);
+    hit(scene, HIT_TRACKS, (Rect){11, expanded ? 192 : 152, rail - 22, LIBRARY_ROW_HEIGHT}, true);
+    hit(scene, HIT_LIBRARY_RESIZE, (Rect){rail, scene->header.h, 6, scene->player.y - scene->header.h}, true);
     hit(scene, HIT_QUEUE, (Rect){width - 195, height - 54, 26, 28}, true);
     hit(scene, HIT_DEVICES, (Rect){width - 163, height - 54, 26, 28}, true);
     hit(scene, HIT_LYRICS, (Rect){width - 227, height - 54, 26, 28}, true);
@@ -749,7 +803,7 @@ void scene_layout(Scene *scene, const View *view, float width, float height) {
     hit(scene, HIT_SCROLL_MAIN, main_thumb, main_thumb.h > 0);
 
     float seek_w = width >= 1200 ? 400 : width >= 1000 ? 352 : 260;
-    hit(scene, HIT_REFRESH, (Rect){rail - 35, 115, 27, 24}, true);
+    hit(scene, HIT_REFRESH, (Rect){rail - 35, 115, 27, 24}, !scene->library_collapsed);
     hit(scene, HIT_PREVIOUS, (Rect){width / 2 - 52, height - 60, 28, 28},
         playback_can_command(&view->playback, "previous"));
     hit(scene, HIT_PLAY, (Rect){width / 2 - 16, height - 62, 32, 32}, true);
@@ -765,6 +819,8 @@ void scene_layout(Scene *scene, const View *view, float width, float height) {
     hit(scene, HIT_VOLUME, (Rect){width - 96, height - 48, 82, 16}, playback_can_volume(&view->playback));
 
     panel_scene_layout(scene, view);
+    hit(scene, HIT_PANEL_RESIZE, (Rect){scene->side_panel.x - 2, scene->side_panel.y, 6, scene->side_panel.h},
+        scene->panel != PANEL_NONE);
     layout_song_hearts(scene, view);
     layout_search_history(scene, view);
 

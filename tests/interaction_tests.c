@@ -171,6 +171,10 @@ static void test_input_and_activation(void) {
     view.authenticated = true;
     scene_layout(&scene, &view, 1280, 800);
 
+    // Nothing is focused at start, so typing goes nowhere until the search box is picked.
+    CHECK(scene.focus == HIT_NONE && !scene_input(&scene, "x", 1));
+    scene.focus = HIT_SEARCH;
+
     CHECK(scene_input(&scene, "Björk ♫", strlen("Björk ♫")));
     CHECK(scene_key(&scene, &view, KEY_BACKSPACE, false));
     CHECK(!strcmp(scene.query, "Björk "));
@@ -446,7 +450,7 @@ static void test_login_screen(void) {
     view.connecting = false;
     view.authenticated = true;
     scene_layout(&scene, &view, 960, 640);
-    CHECK(!scene.login_screen && scene.focus == HIT_SEARCH);
+    CHECK(!scene.login_screen && scene.focus == HIT_NONE);
 
     view.library[1].count = 1;
     view.library[2].count = 2;
@@ -1651,7 +1655,7 @@ static void test_rendering(void) {
                  i + 1);
     }
 
-    for (unsigned state = 0; state < 23; ++state) {
+    for (unsigned state = 0; state < 25; ++state) {
         unsigned width = state == 9                                               ? 1600
                          : state == 2 || state == 5 || state == 10 || state == 11 ? 960
                                                                                   : 1280;
@@ -1659,15 +1663,19 @@ static void test_rendering(void) {
                           : state == 2 || state == 5 || state == 10 || state == 11 ? 640
                                                                                    : 800;
         scene.menu = (ContextMenu){0};
-        scene.home = state == 3 || (state >= 9 && state <= 15) || state == 19 || state == 22;
+        scene.home = state == 3 || (state >= 9 && state <= 15) || state == 19 || state >= 22;
+        scene.library_collapsed = state == 23;
+        scene.library_width = state == 24 ? 300 : 0;
+        scene.panel_width = state == 24 ? 400 : 0;
+        scene.hover[HIT_PANEL_RESIZE] = state == 24 ? 1 : 0;
         scene.home_scroll = state == 11 ? UINT32_MAX : 0;
         scene.main_scroll.offset = state == 11 ? 100000.0f : state == 8 ? 340.0f : 0;
         scene.main_scroll.target = scene.main_scroll.offset;
-        scene.panel = state == 12 || state == 4 ? PANEL_DEVICES
-                      : state == 13 ? PANEL_FRIENDS
-                      : state == 14 ? PANEL_LYRICS
-                      : state == 15 ? PANEL_QUEUE
-                                    : PANEL_NONE;
+        scene.panel = state == 12 || state == 4    ? PANEL_DEVICES
+                      : state == 13                ? PANEL_FRIENDS
+                      : state == 14                ? PANEL_LYRICS
+                      : state == 15 || state == 24 ? PANEL_QUEUE
+                                                   : PANEL_NONE;
         scene.setup_popup = state == 6;
         scene.search_history_open = state == 19;
         view.engine = state == 6 ? ENGINE_NEEDS_KEY : ENGINE_OFF;
@@ -1840,9 +1848,16 @@ static void test_rendering(void) {
             CHECK((pixels[(unsigned)scene.player.y * stride] & 0xffffff) == DARK_BORDER);
             CHECK((pixels[((unsigned)scene.player.y + 1) * stride] & 0xffffff) == DARK_CHROME);
 
-            if (scene.panel != PANEL_NONE) {
-                CHECK((pixels[(unsigned)scene.side_panel.y * stride + (unsigned)scene.side_panel.x] &
-                       0xffffff) == DARK_BORDER);
+            unsigned edge =
+                pixels[(unsigned)scene.side_panel.y * stride + (unsigned)scene.side_panel.x] & 0xffffff;
+
+            // A hovered edge is drawn as a lighter line over the panel border.
+            if (scene.panel != PANEL_NONE && scene.hover[HIT_PANEL_RESIZE] == 0) {
+                CHECK(edge == DARK_BORDER);
+            }
+
+            if (scene.panel != PANEL_NONE && scene.hover[HIT_PANEL_RESIZE] == 1) {
+                CHECK((edge & 0xff) > (DARK_BORDER & 0xff));
             }
         }
 
@@ -1882,7 +1897,8 @@ static void test_rendering(void) {
                 "native-album-detail-fixture.png",    "native-artist-detail-fixture.png",
                 "native-profile-detail-fixture.png",  "native-player-like-recent-fixture.png",
                 "native-settings-fixture.png",        "native-intro-fixture.png",
-                "native-profile-menu-fixture.png"};
+                "native-profile-menu-fixture.png",    "native-collapsed-library-fixture.png",
+                "native-resized-panels-fixture.png"};
             snprintf(path, sizeof(path), "%s/%s", directory, names[state]);
             CHECK(cairo_surface_write_to_png(surface, path) == CAIRO_STATUS_SUCCESS);
         }
@@ -2204,6 +2220,131 @@ static void test_play_pause_burst(void) {
     app_reset_session();
 }
 
+static void test_space_toggles_playback(void) {
+    Worker *worker = &app_state.workers[LANE_PLAYER];
+    platform_lock();
+    worker->running = true;
+    app_state.view.authenticated = true;
+    app_state.view.playback = (Playback){.has_device = true, .device_id = "fixture"};
+    platform_unlock();
+
+    Scene scene;
+    scene_init(&scene);
+    View view = app_snapshot();
+    scene_layout(&scene, &view, 1280, 800);
+
+    // Space plays even when a control holds the focus, instead of pressing that control.
+    scene.focus = HIT_HOME;
+    CHECK(scene_key(&scene, &view, KEY_SPACE, false));
+    CHECK(worker->count == 1 && worker->jobs[worker->head].action == ACTION_PLAY);
+    CHECK(scene.home && scene.focus == HIT_HOME);
+
+    // In a text field Space is typed, never a playback shortcut.
+    scene.focus = HIT_LIST_FILTER;
+    CHECK(scene_key(&scene, &view, KEY_SPACE, false) && worker->count == 1);
+    scene.focus = HIT_SEARCH;
+    CHECK(scene_key(&scene, &view, KEY_SPACE, false) && worker->count == 1);
+
+    scene.focus = HIT_NONE;
+    scene.menu.open = true;
+    CHECK(!scene_key(&scene, &view, KEY_SPACE, false) && worker->count == 1);
+
+    platform_lock();
+    worker->running = false;
+    worker->count = 0;
+    platform_unlock();
+    app_reset_session();
+}
+
+static void test_sidebar_resize_and_collapse(void) {
+    Scene scene;
+    scene_init(&scene);
+    View view = {.authenticated = true};
+    view.playlists.count = 3;
+    scene_layout(&scene, &view, 1280, 800);
+    CHECK(scene.sidebar.w == 223 && !scene.library_collapsed);
+
+    // The library edge sits right of the sidebar, below the header, and wins over the scrollbar.
+    Rect edge = scene.hits[HIT_LIBRARY_RESIZE].rect;
+    CHECK(edge.x == scene.sidebar.w && edge.y == scene.header.h);
+    CHECK(scene_hit(&scene, edge.x + 2, 400) == HIT_LIBRARY_RESIZE);
+    CHECK(scene_hit(&scene, edge.x + 2, 20) != HIT_LIBRARY_RESIZE);
+
+    UiController controller;
+    ui_controller_init(&controller, 0);
+    controller.scene.hot = HIT_LIBRARY_RESIZE;
+    CHECK(ui_controller_cursor(&controller) == UI_CURSOR_RESIZE);
+    ui_controller_destroy(&controller);
+
+    // Dragging follows the pointer from where the edge was grabbed, within the allowed range.
+    scene_press(&scene, &view, edge.x + 2, 400, 100);
+    CHECK(scene.dragging == HIT_LIBRARY_RESIZE);
+    scene_pointer_motion(&scene, 302, 400);
+    scene_layout(&scene, &view, 1280, 800);
+    CHECK(scene.sidebar.w == 300 && scene.content.x == 300);
+    scene_pointer_motion(&scene, 1000, 400);
+    scene_layout(&scene, &view, 1280, 800);
+    CHECK(scene.sidebar.w == scene_library_max(1280));
+    scene_pointer_motion(&scene, 302, 400);
+    scene_layout(&scene, &view, 1280, 800);
+    CHECK(scene.sidebar.w == 300);
+    scene_release(&scene, &view, 302, 400);
+    CHECK(scene.dragging == HIT_NONE && app_snapshot().settings.library_width == 300);
+
+    // Narrower than the midpoint snaps to the collapsed strip; artwork stays clickable.
+    edge = scene.hits[HIT_LIBRARY_RESIZE].rect;
+    scene_press(&scene, &view, edge.x + 2, 400, 200);
+    scene_pointer_motion(&scene, 100, 400);
+    scene_layout(&scene, &view, 1280, 800);
+    CHECK(scene.library_collapsed && scene.sidebar.w == LIBRARY_COLLAPSED_WIDTH);
+    scene_release(&scene, &view, 100, 400);
+    CHECK(app_snapshot().settings.library_collapsed);
+    CHECK(!scene.hits[HIT_PLAYLISTS].enabled && !scene.hits[HIT_REFRESH].enabled);
+    CHECK(scene.hits[HIT_TRACKS].enabled && scene.hits[HIT_LIBRARY_FIRST].enabled);
+    CHECK(scene.hits[HIT_LIBRARY_FIRST].rect.x + scene.hits[HIT_LIBRARY_FIRST].rect.w <= scene.sidebar.w);
+
+    // Clicking the library icon expands it again at the width it had.
+    Rect toggle = scene.hits[HIT_LIBRARY_COLLAPSE].rect;
+    scene_press(&scene, &view, toggle.x + 4, toggle.y + 4, 400);
+    scene_release(&scene, &view, toggle.x + 4, toggle.y + 4);
+    scene_layout(&scene, &view, 1280, 800);
+    CHECK(!scene.library_collapsed && scene.sidebar.w == 300);
+
+    // The right panel keeps toggling and resizes from its left edge.
+    scene_activate(&scene, &view, HIT_QUEUE);
+    scene_layout(&scene, &view, 1280, 800);
+    CHECK(scene.panel == PANEL_QUEUE && scene.side_panel.w == 320);
+    Rect panel_edge = scene.hits[HIT_PANEL_RESIZE].rect;
+    CHECK(scene_hit(&scene, scene.side_panel.x + 2, 400) == HIT_PANEL_RESIZE);
+    scene_press(&scene, &view, scene.side_panel.x + 2, 400, 500);
+    CHECK(scene.dragging == HIT_PANEL_RESIZE);
+    scene_pointer_motion(&scene, scene.side_panel.x - 78, 400);
+    scene_layout(&scene, &view, 1280, 800);
+    CHECK(scene.side_panel.w == 400 && scene.content.x + scene.content.w == scene.side_panel.x);
+    scene_pointer_motion(&scene, 0, 400);
+    scene_layout(&scene, &view, 1280, 800);
+    CHECK(scene.content.w >= CONTENT_MIN_WIDTH && scene.side_panel.w <= PANEL_MAX_WIDTH);
+    scene_pointer_motion(&scene, 1270, 400);
+    scene_layout(&scene, &view, 1280, 800);
+    CHECK(scene.side_panel.w == PANEL_MIN_WIDTH);
+    scene_release(&scene, &view, 1270, 400);
+    CHECK(app_snapshot().settings.panel_width == PANEL_MIN_WIDTH);
+    CHECK(panel_edge.h == scene.side_panel.h);
+
+    scene_activate(&scene, &view, HIT_PANEL_CLOSE);
+    scene_layout(&scene, &view, 1280, 800);
+    CHECK(scene.panel == PANEL_NONE && !scene.hits[HIT_PANEL_RESIZE].enabled);
+
+    // A new scene restores the saved layout.
+    Scene restored;
+    scene_init(&restored);
+    View saved = app_snapshot();
+    saved.authenticated = true;
+    scene_layout(&restored, &saved, 1280, 800);
+    CHECK(restored.sidebar.w == 300 && restored.panel_width == PANEL_MIN_WIDTH);
+    app_set_layout(0, false, 0);
+}
+
 static void test_recent_search_popup(void) {
     Scene scene;
     scene_init(&scene);
@@ -2216,13 +2357,15 @@ static void test_recent_search_popup(void) {
     scene_layout(&scene, &view, 1280, 800);
     CHECK(scene.search_history_open);
     CHECK(scene.search_history_panel.x == scene.search.x && scene.search_history_panel.w == scene.search.w);
-    CHECK(scene.search_history_scroll.extent > scene.search_history_scroll.viewport);
+    CHECK(scene.search_history_scroll.extent == 5 * HISTORY_ROW_HEIGHT);
+    CHECK(scene.hits[HIT_HISTORY_FIRST + 4].enabled);
+    CHECK(!scene.hits[HIT_HISTORY_FIRST + 5].enabled);
 
     Rect remove = scene.hits[HIT_HISTORY_REMOVE_FIRST].rect;
     CHECK(scene_hit(&scene, remove.x + 2, remove.y + 2) == HIT_HISTORY_REMOVE_FIRST);
     scene.over_search_history = true;
     scene_wheel(&scene, &view, .5f, 2, false);
-    CHECK(scene.search_history_scroll.target == HISTORY_ROW_HEIGHT);
+    CHECK(scene.search_history_scroll.target == 0);
     CHECK(scene.main_scroll.target == 0);
     scene_press(&scene, &view, 10, 480, 120);
     CHECK(!scene.search_history_open);
@@ -2967,6 +3110,7 @@ static void test_native_text_editing(void) {
     View view = app_snapshot();
     view.authenticated = true;
     scene_layout(&scene, &view, 1280, 800);
+    scene.focus = HIT_SEARCH;
 
     /* Basic left/right, mid-string insert/backspace/delete, home/end in search. */
     CHECK(scene_input(&scene, "hello world", 11));
@@ -3148,6 +3292,8 @@ int main(void) {
 #endif
 
     test_play_pause_burst();
+    test_space_toggles_playback();
+    test_sidebar_resize_and_collapse();
     test_recent_search_popup();
     test_wheel_settings();
     test_artist_likes();

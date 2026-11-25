@@ -5,6 +5,7 @@
 #include "linux_canvas.h"
 #include "ui.h"
 
+#include <X11/XKBlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
 #include <X11/cursorfont.h>
@@ -29,9 +30,10 @@ typedef struct {
     cairo_surface_t *buffer;
     XIC input;
     Atom clipboard, utf8, targets, paste, key_paste, close;
-    Cursor hand, caret;
+    Cursor hand, caret, resize;
     bool focused, input_active, visible;
     bool lyrics_fullscreen;
+    bool space_down;
     int width, height;
     char clipboard_text[SEARCH_CAPACITY];
     size_t clipboard_size;
@@ -75,6 +77,11 @@ static void apply_cursor(NativeWindow *window) {
 
     if (cursor == UI_CURSOR_HAND) {
         XDefineCursor(window->display, window->handle, window->hand);
+        return;
+    }
+
+    if (cursor == UI_CURSOR_RESIZE) {
+        XDefineCursor(window->display, window->handle, window->resize);
         return;
     }
 
@@ -253,6 +260,15 @@ static void key(NativeWindow *window, XKeyEvent *event) {
         if (shortcut == UI_SHORTCUT_HANDLED) {
             return;
         }
+    }
+
+    // Holding Space must not toggle playback over and over.
+    if (symbol == XK_space && !ui_controller_is_editing(&window->controller)) {
+        if (window->space_down) {
+            return;
+        }
+
+        window->space_down = true;
     }
 
     SceneKey mapped;
@@ -438,7 +454,11 @@ int ui_run(bool smoke_test) {
 
     XSelectInput(window->display, window->handle,
                  ExposureMask | StructureNotifyMask | ButtonPressMask | ButtonReleaseMask |
-                     PointerMotionMask | KeyPressMask | FocusChangeMask | LeaveWindowMask | filter);
+                     PointerMotionMask | KeyPressMask | KeyReleaseMask | FocusChangeMask | LeaveWindowMask |
+                     filter);
+
+    // Held keys then repeat as presses only, so a real release marks the end of a hold.
+    XkbSetDetectableAutoRepeat(window->display, True, NULL);
 
     window->clipboard = XInternAtom(window->display, "CLIPBOARD", False);
     window->utf8 = XInternAtom(window->display, "UTF8_STRING", False);
@@ -448,6 +468,7 @@ int ui_run(bool smoke_test) {
     active_window = window;
     window->hand = XCreateFontCursor(window->display, XC_hand2);
     window->caret = XCreateFontCursor(window->display, XC_xterm);
+    window->resize = XCreateFontCursor(window->display, XC_sb_h_double_arrow);
     window->surface =
         cairo_xlib_surface_create(window->display, window->handle, DefaultVisual(window->display, screen),
                                   window->width, window->height);
@@ -502,7 +523,13 @@ int ui_run(bool smoke_test) {
                 break;
             case FocusOut:
                 window->focused = false;
+                window->space_down = false;
                 input_focus(window);
+                break;
+            case KeyRelease:
+                if (XLookupKeysym(&event.xkey, 0) == XK_space) {
+                    window->space_down = false;
+                }
                 break;
             case LeaveNotify:
                 ui_controller_leave(&window->controller, milliseconds());

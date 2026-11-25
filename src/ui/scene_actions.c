@@ -643,6 +643,10 @@ void scene_activate(Scene *scene, const View *view, HitId id) {
     case HIT_PLAYLISTS:
         scene_open_section(scene, BROWSE_PLAYLISTS);
         return;
+    case HIT_LIBRARY_COLLAPSE:
+        scene->library_collapsed = !scene->library_collapsed;
+        scene_save_layout(scene);
+        return;
     case HIT_QUEUE:
         panel_scene_toggle(scene, PANEL_QUEUE);
         return;
