@@ -6,9 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#else
+#ifndef _WIN32
 #include <unistd.h>
 #endif
 
@@ -113,22 +111,14 @@ static void exited(int code, void *context) {
     platform_unlock();
 }
 
-static void test_processes(void) {
-#ifdef _WIN32
-    char shell[MAX_PATH];
-    GetSystemDirectoryA(shell, MAX_PATH);
-    strcat(shell, "\\cmd.exe");
-    const char *expire[] = {shell, "/c", "exit 10", NULL};
-    const char *wait[] = {shell, "/c", "ping -n 30 127.0.0.1", NULL};
-#else
-    const char *shell = "/bin/sh";
-    const char *expire[] = {shell, "-c", "exit 10", NULL};
-    const char *wait[] = {shell, "-c", "sleep 30", NULL};
-#endif
+static void test_processes(const char *executable) {
+    const char *expire[] = {executable,      "--process-expire", "argument with spaces",
+                            "quote\"inside", "trailing\\",       NULL};
+    const char *wait[] = {executable, "--process-wait", NULL};
 
     // Soloist exits with code 10 when its build expires; the engine relies on seeing that code.
     Exit result = {-1, 0};
-    PlatformProcess *process = platform_process_start(shell, expire, exited, &result);
+    PlatformProcess *process = platform_process_start(executable, expire, exited, &result);
     CHECK(process != NULL);
 
     uint64_t deadline = platform_milliseconds() + 5000;
@@ -146,7 +136,7 @@ static void test_processes(void) {
 
     // Stopping an owned process ends it promptly and does not report an unexpected exit.
     result = (Exit){-1, 0};
-    process = platform_process_start(shell, wait, exited, &result);
+    process = platform_process_start(executable, wait, exited, &result);
     CHECK(process != NULL);
     platform_sleep(100);
     uint64_t start = platform_milliseconds();
@@ -207,12 +197,24 @@ static void test_files(void) {
 #endif
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 5 && !strcmp(argv[1], "--process-expire")) {
+        CHECK(!strcmp(argv[2], "argument with spaces"));
+        CHECK(!strcmp(argv[3], "quote\"inside"));
+        CHECK(!strcmp(argv[4], "trailing\\"));
+        return 10;
+    }
+
+    if (argc == 2 && !strcmp(argv[1], "--process-wait")) {
+        platform_sleep(30000);
+        return 0;
+    }
+
     CHECK(platform_init());
     test_keys();
     test_update_policy();
     test_devices_and_paths();
-    test_processes();
+    test_processes(argv[0]);
     test_files();
 
     printf("PASS: %u engine checks (Soloist key handling, update policy, device match, owned processes, "

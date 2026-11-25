@@ -3,6 +3,10 @@
 A Windows-first Spotify client with a shared C17 core and a modern, natively
 rendered desktop UI. No Electron, WebView, GTK or Qt.
 
+I built this because I was fed up with the official Spotify client's RAM usage
+and wanted something lighter. This client uses around **20 MB of RAM in my
+Windows setup**; usage varies with platform and workload, and Soloist runs separately.
+
 **Desktop is usable on Windows and Linux. Android is a work in progress.**
 
 [Get started](#get-started) · [Build](docs/BUILDING.md) · [Android](android/README.md) · [Screenshots](docs/screenshots/README.md)

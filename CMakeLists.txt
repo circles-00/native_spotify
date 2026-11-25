@@ -185,6 +185,13 @@ if(BUILD_TESTING)
 
   if(WIN32)
     target_link_libraries(interaction_tests PRIVATE gdi32 user32 msimg32 dwmapi)
+
+    # Scene fixtures and by-value snapshots exceed Windows' default 1 MiB test stack.
+    if(MSVC)
+      target_link_options(interaction_tests PRIVATE /STACK:8388608)
+    else()
+      target_link_options(interaction_tests PRIVATE -Wl,--stack,8388608)
+    endif()
   else()
     target_link_libraries(interaction_tests PRIVATE PkgConfig::UI)
   endif()
