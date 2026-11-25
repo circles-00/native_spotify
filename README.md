@@ -51,8 +51,9 @@ audio-verification caveats.
 
 ## Get started
 
-Build the desktop client using the [Windows or Linux instructions](docs/BUILDING.md).
-Keep the `assets/` directory beside the executable; CMake copies it for you.
+Download the Windows or Linux x64 ZIP from [Releases](https://github.com/circles-00/native_spotify/releases/latest),
+or [build from source](docs/BUILDING.md). Extract the archive and keep the `assets/`
+directory beside the executable. Linux packages require [system libraries](docs/BUILDING.md#prebuilt-linux-packages).
 
 1. Open the app and choose **Continue with Spotify**. Approve access in your browser.
 2. Pick a track. For local audio, **Play on this computer** guides you through
@@ -91,6 +92,12 @@ OS adapters in `src/platform/`, and the Android frontend in `android/`.
 See [building and testing](docs/BUILDING.md), [Android development](android/README.md)
 and the [visual references](design/REFERENCES.md). Follow `.clang-format` and keep
 OS/UI dependencies out of the shared core.
+
+## Project status
+
+This is a hobby project, maintained for my own needs. Updates, fixes and support
+are not guaranteed. It comes with no warranty or security guarantees; use it at
+your own risk.
 
 ## License
 

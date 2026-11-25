@@ -6,6 +6,41 @@ Desktop builds require CMake 3.20+ and a C17 compiler. Keep `assets/` beside the
 executable: it contains the bundled fonts, licenses and application icons.
 CMake copies it automatically and includes it in desktop ZIP packages.
 
+## Automated releases
+
+The [GitHub Actions workflow](../.github/workflows/build.yml) builds Windows x64
+on Windows Server 2022 and Linux x64 on Ubuntu 22.04. Both jobs run CTest and
+native window smoke checks before uploading ZIP artifacts containing the
+executable, assets, documentation and licenses.
+
+Successful pushes to `main` publish both ZIPs under [GitHub Releases](https://github.com/circles-00/native_spotify/releases).
+The first release uses the CMake project version; later releases increment the
+latest release tag's minor version, unless CMake specifies a newer version.
+Release notes list commits since the previous version tag. Versions are tracked
+by Git tags; the workflow does not commit version bumps back to the repository.
+Rerunning an already released commit does not create another release.
+
+Pull requests only build, test and upload artifacts. Use **Actions → Desktop
+builds and releases → Run workflow** on `main` to build and publish manually.
+Artifacts are retained for 14 days; published release assets remain available.
+Publishing uses the built-in `GITHUB_TOKEN` with `contents: write` in the release
+job only. Repository policy must allow that permission; no personal token or
+Spotify credentials are needed.
+
+### Prebuilt Linux packages
+
+The Linux ZIP is not an AppImage or a fully static bundle. It targets Ubuntu
+22.04 x64 (glibc 2.35+) and compatible systems with these runtime dependencies:
+
+```sh
+sudo apt-get install ca-certificates libx11-6 libcairo2 libpango-1.0-0 libpangocairo-1.0-0 \
+  libfontconfig1 libjpeg-turbo8 libpng16-16 libwebp7 libcurl4 libssl3 libsecret-1-0
+```
+
+Package names vary by distribution. An X11/XWayland session and an unlocked
+Secret Service provider are also needed. Windows packages use the static MSVC
+runtime and require Windows 10/11. Soloist is downloaded at runtime on both platforms.
+
 ## Windows
 
 Install CMake and Visual Studio 2022 Build Tools with **Desktop development with

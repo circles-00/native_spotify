@@ -1,15 +1,31 @@
-name: Native builds
+name: Desktop builds and releases
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows:
-    runs-on: windows-latest
+    name: Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: cmake -S . -B build
-      - run: cmake --build build --config Release
-      - run: ctest -C Release --output-on-failure -V
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest -C Release --output-on-failure -V
         working-directory: build
       - name: Window smoke test
         shell: pwsh
@@ -25,14 +41,122 @@ jobs:
           name: windows-x64
           path: build/native-spotify-Windows-*.zip
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
   linux:
-    runs-on: ubuntu-latest
+    name: Linux x64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libx11-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev libjpeg-dev libpng-dev libcurl4-openssl-dev libssl-dev libsecret-1-dev xvfb
-      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-      - run: cmake --build build --parallel
-      - run: ctest --output-on-failure -V
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config zip \
+            libx11-dev libcairo2-dev libpango1.0-dev libfontconfig1-dev \
+            libjpeg-dev libpng-dev libwebp-dev libcurl4-openssl-dev libssl-dev libsecret-1-dev xvfb
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --output-on-failure -V
         working-directory: build
-      - run: xvfb-run -a build/native_spotify --smoke-test
+      - name: Window smoke test
+        run: xvfb-run -a build/native_spotify --smoke-test
+      - name: Bundle complete application
+        run: cmake --build build --target package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: build/native-spotify-Linux-*.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: Publish release
+    needs: [windows, linux]
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' &&
+      !contains(github.event.head_commit.message, '[skip ci]')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-x64'
+          path: artifacts
+          merge-multiple: true
+      - name: Determine release version
+        id: meta
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          def version(tag):
+              match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag)
+              return tuple(map(int, match.groups())) if match else None
+
+          tags = subprocess.check_output(["git", "tag", "--list", "v*"], text=True).splitlines()
+          tags = sorted((tag for tag in tags if version(tag) is not None), key=version)
+          current = subprocess.check_output(["git", "tag", "--points-at", "HEAD"], text=True).splitlines()
+          existing = [tag for tag in tags if tag in current]
+          previous = [tag for tag in tags if tag not in existing]
+          configured = re.search(r"project\(native_spotify VERSION (\d+\.\d+\.\d+)", Path("CMakeLists.txt").read_text())
+          base = tuple(map(int, configured.group(1).split(".")))
+          latest = version(previous[-1]) if previous else None
+          next_version = base if latest is None or base > latest else (latest[0], latest[1] + 1, 0)
+          tag = existing[-1] if existing else "v" + ".".join(map(str, next_version))
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"tag={tag}\n")
+              output.write(f"previous={previous[-1] if previous else ''}\n")
+          PY
+      - name: Generate changelog and publish binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.meta.outputs.previous }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; nothing to publish."
+            exit 0
+          fi
+
+          mkdir -p release
+          cp artifacts/native-spotify-Windows-*.zip "release/native-spotify-${TAG}-windows-x64.zip"
+          cp artifacts/native-spotify-Linux-*.zip "release/native-spotify-${TAG}-linux-x64.zip"
+
+          RANGE="$GITHUB_SHA"
+          if [ -n "$PREVIOUS_TAG" ]; then
+            RANGE="${PREVIOUS_TAG}..${GITHUB_SHA}"
+          fi
+
+          {
+            echo "## Downloads"
+            echo ""
+            echo "Download the ZIP for your platform, extract it, and keep assets/ beside the executable."
+            echo "Linux builds target Ubuntu 22.04 x64 and require system libraries; see docs/BUILDING.md in the archive."
+            echo ""
+            echo "## Changelog"
+            echo ""
+            git log "$RANGE" --invert-grep --grep='^chore(release):' --pretty=format:'- %s (%h)'
+            echo ""
+          } > release-notes.md
+
+          gh release create "$TAG" release/*.zip \
+            --target "$GITHUB_SHA" \
+            --title "Native Spotify $TAG" \
+            --notes-file release-notes.md \
+            --latest
