@@ -773,6 +773,8 @@ void app_reset_session(void) {
     app_state.seek = (PlayerSeek){0};
     app_state.seek_due_ms = 0;
     app_state.seek_sent_ms = 0;
+    app_state.volume_due_ms = 0;
+    app_state.volume_sent_ms = 0;
     app_state.has_deferred = false;
     devices_reset(&app_state.view.devices);
     ++app_state.view.devices_revision;
@@ -909,6 +911,11 @@ void app_optimistic(const Job *job) {
         break;
     case ACTION_VOLUME:
         playback->volume_percent = (int)job->value;
+
+        if (playback->has_device && playback->device_id[0]) {
+            player_sync_expect_volume(&app_state.sync, playback->device_id, (int)job->value, now);
+        }
+
         break;
     case ACTION_SHUFFLE:
         playback->shuffle = job->value != 0;
@@ -1003,7 +1010,7 @@ void app_optimistic(const Job *job) {
 
     if (job->action == ACTION_VOLUME || job->action == ACTION_SHUFFLE || job->action == ACTION_REPEAT ||
         (job->action == ACTION_SEEK && !app_state.seek.local) || job->action == ACTION_PLAY_ITEM) {
-        app_save_playback_locked(job->action != ACTION_SEEK);
+        app_save_playback_locked(job->action != ACTION_SEEK && job->action != ACTION_VOLUME);
     }
 }
 
@@ -1016,6 +1023,13 @@ static bool submit_command(Job job) {
     platform_lock();
     if (job.action != ACTION_SEEK || (app_state.seek.pending && job.seq == app_state.seek.sequence)) {
         app_state.seek.pending = false;
+
+        if (job.action == ACTION_VOLUME && app_state.sync.volume_until_ms &&
+            app_state.sync.volume_percent == (int)job.value &&
+            !strcmp(app_state.sync.volume_device, job.target.device_id)) {
+            app_state.sync.volume_until_ms = 0;
+        }
+
         player_sync_requested(&app_state.sync, platform_milliseconds());
         snprintf(app_state.view.status, sizeof(app_state.view.status),
                  "Could not schedule playback control. Please try again.");
@@ -1039,6 +1053,22 @@ static bool command(Job job) {
     if (ready) {
         job.session = app_state.view.session_revision;
         app_optimistic(&job);
+
+        if (job.action == ACTION_VOLUME) {
+            uint64_t now = platform_milliseconds();
+            uint64_t due = player_volume_due(app_state.volume_sent_ms, now);
+
+            if (due > now) {
+                app_state.delayed_volume = job;
+                app_state.volume_due_ms = due;
+                platform_unlock();
+                app_wake();
+                return true;
+            }
+
+            app_state.volume_due_ms = 0;
+            app_state.volume_sent_ms = now;
+        }
 
         if (job.action == ACTION_SEEK) {
             job.seq = app_state.seek.sequence;
@@ -1242,9 +1272,24 @@ int app_tick_with_progress(bool visible, bool publish_progress) {
     uint64_t now = platform_milliseconds();
     Job seek_job;
     bool send_seek = app_state.seek_due_ms && now >= app_state.seek_due_ms;
+
     if (send_seek) {
         seek_job = app_state.delayed_seek;
         app_state.seek_due_ms = 0;
+    }
+
+    Job volume_job;
+    bool send_volume = false;
+
+    if (app_state.volume_due_ms && now >= app_state.volume_due_ms) {
+        volume_job = app_state.delayed_volume;
+        app_state.volume_due_ms = 0;
+
+        if (volume_job.session == app_state.view.session_revision && app_state.view.playback.has_device &&
+            !strcmp(volume_job.target.device_id, app_state.view.playback.device_id)) {
+            app_state.volume_sent_ms = now;
+            send_volume = true;
+        }
     }
     bool poll = now >= app_state.sync.next_ms;
     bool queue = poll && app_state.view.list.loaded && app_state.view.list.request.kind == BROWSE_QUEUE &&
@@ -1302,6 +1347,10 @@ int app_tick_with_progress(bool visible, bool publish_progress) {
         deadline = app_state.seek_due_ms;
     }
 
+    if (app_state.volume_due_ms && app_state.volume_due_ms < deadline) {
+        deadline = app_state.volume_due_ms;
+    }
+
     if (need_lyrics && !load_lyrics && app_state.lyrics_next_request_ms < deadline) {
         deadline = app_state.lyrics_next_request_ms;
     }
@@ -1318,6 +1367,10 @@ int app_tick_with_progress(bool visible, bool publish_progress) {
 
     if (send_seek) {
         submit_command(seek_job);
+    }
+
+    if (send_volume) {
+        submit_command(volume_job);
     }
 
     if (poll) {

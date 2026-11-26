@@ -47,6 +47,16 @@ static bool same_transport(const Job *left, const Job *right) {
            !strcmp(left->target.device_id, right->target.device_id);
 }
 
+static bool queued_action(const Worker *worker, Action action) {
+    for (unsigned i = 0; i < worker->count; ++i) {
+        if (worker->jobs[(worker->head + i) % worker->capacity].action == action) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /* A newer request of the same kind makes a queued one pointless (drags, polls, list loads). */
 static bool supersedes(Action queued, Action incoming) {
     if (incoming == ACTION_BROWSE) {
@@ -417,6 +427,11 @@ static void run_sync(Spotify *spotify, const Job *job) {
     bool fresh = job->session == app_state.view.session_revision && job->seq == app_state.command_seq &&
                  !app_command_pending() && (!device[0] || !engine_changed);
     bool live_track = ok && (playback.uri[0] != 0 || playback.playing);
+
+    if (ok && fresh) {
+        player_sync_reconcile_volume(&app_state.sync, &playback, now);
+    }
+
     bool settling = ok && fresh &&
                     ((from_engine && app_state.view.changing_track && live_track && !playback.position_known &&
                       now < app_state.sync.track_until_ms) ||
@@ -1016,11 +1031,16 @@ void app_run_player(Spotify *spotify, const Job *job) {
     }
 
     Worker *worker = &app_state.workers[LANE_PLAYER];
-    bool superseded = worker->count && same_transport(job, &worker->jobs[worker->head]);
+    bool volume_superseded =
+        job->action == ACTION_VOLUME && (app_state.volume_due_ms != 0 || queued_action(worker, ACTION_VOLUME));
+    bool superseded = volume_superseded || (worker->count && same_transport(job, &worker->jobs[worker->head]));
 
     if (job->session == app_state.view.session_revision && !superseded) {
         uint64_t now = platform_milliseconds();
-        player_sync_requested(&app_state.sync, now);
+
+        if (job->action != ACTION_VOLUME || !accepted) {
+            player_sync_requested(&app_state.sync, now);
+        }
 
         if (job->action == ACTION_PLAY_ITEM || job->action == ACTION_NEXT || job->action == ACTION_PREVIOUS ||
             job->action == ACTION_TRANSFER || job->action == ACTION_RADIO) {
@@ -1042,8 +1062,24 @@ void app_run_player(Spotify *spotify, const Job *job) {
         }
 
         // A successful write can still be followed by a read of the old state.
-        if (accepted && job->seq == app_state.command_seq && transport(job->action) && target.has_device) {
-            player_sync_expect_playing(&app_state.sync, target.device_id, job->action == ACTION_PLAY, now);
+        if (accepted && target.has_device) {
+            if (job->seq == app_state.command_seq && transport(job->action)) {
+                player_sync_expect_playing(&app_state.sync, target.device_id, job->action == ACTION_PLAY,
+                                           now);
+            }
+
+            if (job->action == ACTION_VOLUME && app_state.view.playback.has_device &&
+                !strcmp(target.device_id, app_state.view.playback.device_id) &&
+                app_state.view.playback.volume_percent == (int)job->value) {
+                player_sync_expect_volume(&app_state.sync, target.device_id, (int)job->value, now);
+                app_save_playback_locked(true);
+            }
+        }
+
+        if (!accepted && job->action == ACTION_VOLUME && app_state.sync.volume_until_ms &&
+            !strcmp(target.device_id, app_state.sync.volume_device) &&
+            app_state.sync.volume_percent == (int)job->value) {
+            app_state.sync.volume_until_ms = 0;
         }
 
         if (!job->local_seek || job->seq == app_state.seek.sequence) {

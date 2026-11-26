@@ -102,6 +102,9 @@ typedef struct {
     Job delayed_seek;
     uint64_t seek_due_ms;
     uint64_t seek_sent_ms;
+    Job delayed_volume;
+    uint64_t volume_due_ms;
+    uint64_t volume_sent_ms;
     uint64_t next_paint_ms;
     uint64_t next_devices_ms;
     unsigned command_seq;

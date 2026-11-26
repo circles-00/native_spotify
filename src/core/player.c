@@ -381,6 +381,37 @@ void player_sync_expect_playing(PlayerSync *sync, const char *device_id, bool pl
     sync->transport_until_ms = now_ms + 1000;
 }
 
+void player_sync_expect_volume(PlayerSync *sync, const char *device_id, int volume_percent, uint64_t now_ms) {
+    copy_utf8(sync->volume_device, sizeof(sync->volume_device), device_id);
+    sync->volume_percent = volume_percent;
+    sync->volume_until_ms = now_ms + 8000;
+}
+
+void player_sync_reconcile_volume(PlayerSync *sync, Playback *incoming, uint64_t now_ms) {
+    if (!sync->volume_until_ms) {
+        return;
+    }
+
+    if (now_ms >= sync->volume_until_ms || !incoming->has_device ||
+        strcmp(incoming->device_id, sync->volume_device)) {
+        sync->volume_until_ms = 0;
+        return;
+    }
+
+    // Hold the expected volume for the full settling window so stale or intermediate API reads never bounce it.
+    incoming->volume_percent = sync->volume_percent;
+}
+
+uint64_t player_volume_due(uint64_t last_dispatch_ms, uint64_t now_ms) {
+    const uint64_t spacing = 120;
+
+    if (!last_dispatch_ms || now_ms >= last_dispatch_ms + spacing) {
+        return now_ms;
+    }
+
+    return last_dispatch_ms + spacing;
+}
+
 void player_sync_expect_track(PlayerSync *sync, const Playback *previous, const char *device,
                               const char *expected_uri, bool allow_restart, uint64_t now_ms) {
     copy_utf8(sync->track_device, sizeof(sync->track_device), device);

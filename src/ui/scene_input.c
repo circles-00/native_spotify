@@ -53,7 +53,12 @@ void scene_motion(Scene *scene, float x) {
     }
 
     if (scene->dragging == HIT_VOLUME) {
-        scene->draft.volume = (unsigned)(fraction * 100);
+        unsigned previous = scene->draft.volume;
+        scene->draft.volume = (unsigned)(fraction * 100.0f + 0.5f);
+
+        if (scene->draft.volume != previous) {
+            app_volume(scene->draft.volume);
+        }
     }
 }
 
@@ -224,7 +229,7 @@ void scene_release(Scene *scene, const View *view, float x, float y) {
         app_seek(scene->draft.seek);
     }
 
-    if (scene->dragging == HIT_VOLUME) {
+    if (scene->dragging == HIT_VOLUME && view->playback.volume_percent != (int)scene->draft.volume) {
         app_volume(scene->draft.volume);
     }
 
@@ -672,9 +677,15 @@ bool scene_key_mods(Scene *scene, const View *view, SceneKey key, bool shift, bo
 
     if ((scene->focus == HIT_SEEK || scene->focus == HIT_VOLUME) && (key == KEY_LEFT || key == KEY_RIGHT)) {
         unsigned *value = scene->focus == HIT_SEEK ? &scene->draft.seek : &scene->draft.volume;
+        unsigned previous = *value;
         unsigned maximum = scene->focus == HIT_SEEK ? 1000 : 100;
         int next = (int)*value + (key == KEY_LEFT ? -5 : 5);
         *value = next < 0 ? 0 : (unsigned)next > maximum ? maximum : (unsigned)next;
+
+        if (scene->focus == HIT_VOLUME && *value != previous && scene->hits[HIT_VOLUME].enabled) {
+            app_volume(*value);
+        }
+
         return true;
     }
 

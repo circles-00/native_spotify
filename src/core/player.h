@@ -67,6 +67,9 @@ typedef struct {
     uint64_t transport_until_ms;
     char transport_device[DEVICE_ID_CAPACITY];
     bool transport_playing;
+    uint64_t volume_until_ms;
+    char volume_device[DEVICE_ID_CAPACITY];
+    int volume_percent;
     uint64_t track_until_ms;
     char track_device[DEVICE_ID_CAPACITY];
     char previous_uri[sizeof(((Playback *)0)->uri)];
@@ -77,6 +80,9 @@ typedef struct {
 
 void player_sync_requested(PlayerSync *sync, uint64_t now_ms);
 void player_sync_expect_playing(PlayerSync *sync, const char *device_id, bool playing, uint64_t now_ms);
+void player_sync_expect_volume(PlayerSync *sync, const char *device_id, int volume_percent, uint64_t now_ms);
+void player_sync_reconcile_volume(PlayerSync *sync, Playback *incoming, uint64_t now_ms);
+uint64_t player_volume_due(uint64_t last_dispatch_ms, uint64_t now_ms);
 bool player_sync_waiting(PlayerSync *sync, const Playback *incoming, uint64_t now_ms);
 void player_sync_expect_track(PlayerSync *sync, const Playback *previous, const char *device,
                               const char *expected_uri, bool allow_restart, uint64_t now_ms);

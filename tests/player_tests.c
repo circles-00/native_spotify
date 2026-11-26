@@ -320,6 +320,35 @@ static void test_commands_and_sync(void) {
     CHECK(player_sync_waiting(&sync, &incoming, 407100));
     incoming.position_ms = 50;
     CHECK(!player_sync_waiting(&sync, &incoming, 407200));
+
+    incoming.volume_percent = 65;
+    player_sync_expect_volume(&sync, "test-device", 80, 408000);
+    player_sync_requested(&sync, 408050);
+    player_sync_reconcile_volume(&sync, &incoming, 408100);
+    CHECK(incoming.volume_percent == 80 && sync.volume_until_ms == 416000);
+    incoming.volume_percent = 80;
+    player_sync_reconcile_volume(&sync, &incoming, 408200);
+    CHECK(incoming.volume_percent == 80 && sync.volume_until_ms == 416000);
+    // Out-of-order or stale intermediate API responses still stay pinned during the settling window.
+    incoming.volume_percent = 65;
+    player_sync_reconcile_volume(&sync, &incoming, 408300);
+    CHECK(incoming.volume_percent == 80 && sync.volume_until_ms == 416000);
+    // Switching devices clears the guard immediately so the new device's real volume appears.
+    snprintf(incoming.device_id, sizeof(incoming.device_id), "other-device");
+    incoming.volume_percent = 30;
+    player_sync_reconcile_volume(&sync, &incoming, 408400);
+    CHECK(incoming.volume_percent == 30 && sync.volume_until_ms == 0);
+    snprintf(incoming.device_id, sizeof(incoming.device_id), "test-device");
+
+    incoming.volume_percent = 65;
+    player_sync_expect_volume(&sync, "test-device", 80, 409000);
+    player_sync_reconcile_volume(&sync, &incoming, 417000);
+    CHECK(incoming.volume_percent == 65 && sync.volume_until_ms == 0);
+
+    CHECK(player_volume_due(0, 1000) == 1000);
+    CHECK(player_volume_due(1000, 1040) == 1120);
+    CHECK(player_volume_due(1000, 1120) == 1120);
+    CHECK(player_volume_due(1000, 1200) == 1200);
 }
 
 static void test_local_seek_confirmation(void) {
