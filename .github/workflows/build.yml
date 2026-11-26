@@ -146,7 +146,7 @@ jobs:
           {
             echo "## Downloads"
             echo ""
-            echo "Download the ZIP for your platform, extract it, and keep assets/ beside the executable."
+            echo "Download the ZIP for your platform, extract it, and run the executable (fonts and icons are embedded in the binary)."
             echo "Linux builds target Ubuntu 22.04 x64 and require system libraries; see docs/BUILDING.md in the archive."
             echo ""
             echo "## Changelog"

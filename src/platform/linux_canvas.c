@@ -1,11 +1,15 @@
 #define _POSIX_C_SOURCE 200809L
 #include "linux_canvas.h"
 #include "artwork_cache.h"
+#include "embedded_fonts.h"
+#include "platform.h"
 
+#include <fcntl.h>
 #include <fontconfig/fontconfig.h>
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static void color(cairo_t *paint, Color value) {
@@ -356,26 +360,83 @@ void linux_canvas_destroy(LinuxCanvas *backend) {
     }
 }
 
+static bool ensure_embedded_font(const char *directory, const char *name, const unsigned char *data,
+                                 size_t size, char *out, size_t capacity) {
+    int length = snprintf(out, capacity, "%s/%s", directory, name);
+
+    if (length <= 0 || (size_t)length >= capacity) {
+        return false;
+    }
+
+    struct stat info;
+
+    if (stat(out, &info) == 0 && info.st_size == (off_t)size) {
+        return true;
+    }
+
+    char temp[PLATFORM_PATH_CAPACITY];
+    int temp_length = snprintf(temp, sizeof(temp), "%s.tmp.%ld", out, (long)getpid());
+
+    if (temp_length <= 0 || (size_t)temp_length >= sizeof(temp)) {
+        return false;
+    }
+
+    int fd = open(temp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+
+    if (fd < 0) {
+        return false;
+    }
+
+    size_t written = 0;
+
+    while (written < size) {
+        ssize_t chunk = write(fd, data + written, size - written);
+
+        if (chunk <= 0) {
+            close(fd);
+            unlink(temp);
+            return false;
+        }
+
+        written += (size_t)chunk;
+    }
+
+    if (close(fd) != 0) {
+        unlink(temp);
+        return false;
+    }
+
+    if (rename(temp, out) != 0) {
+        unlink(temp);
+        return false;
+    }
+
+    return true;
+}
+
 void linux_load_font(void) {
-    char executable[PATH_MAX];
-    ssize_t size = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+    char base[PLATFORM_PATH_CAPACITY];
 
-    if (size <= 0) {
+    if (!platform_data_dir(base, sizeof(base))) {
         return;
     }
 
-    executable[size] = 0;
-    char *slash = strrchr(executable, '/');
+    char directory[PLATFORM_PATH_CAPACITY];
+    int length = snprintf(directory, sizeof(directory), "%s/fonts", base);
 
-    if (!slash) {
+    if (length <= 0 || (size_t)length >= sizeof(directory) || !platform_make_dir(directory)) {
         return;
     }
 
-    *slash = 0;
+    char font[PLATFORM_PATH_CAPACITY];
 
-    char font[PATH_MAX + 32];
-    snprintf(font, sizeof(font), "%s/assets/Inter-Regular.ttf", executable);
-    FcConfigAppFontAddFile(FcConfigGetCurrent(), (const FcChar8 *)font);
-    snprintf(font, sizeof(font), "%s/assets/Inter-Bold.ttf", executable);
-    FcConfigAppFontAddFile(FcConfigGetCurrent(), (const FcChar8 *)font);
+    if (ensure_embedded_font(directory, "Inter-Regular.ttf", inter_regular_ttf, inter_regular_ttf_size, font,
+                             sizeof(font))) {
+        FcConfigAppFontAddFile(FcConfigGetCurrent(), (const FcChar8 *)font);
+    }
+
+    if (ensure_embedded_font(directory, "Inter-Bold.ttf", inter_bold_ttf, inter_bold_ttf_size, font,
+                             sizeof(font))) {
+        FcConfigAppFontAddFile(FcConfigGetCurrent(), (const FcChar8 *)font);
+    }
 }

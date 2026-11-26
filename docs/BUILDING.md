@@ -2,16 +2,16 @@
 
 [Back to README](../README.md)
 
-Desktop builds require CMake 3.20+ and a C17 compiler. Keep `assets/` beside the
-executable: it contains the bundled fonts, licenses and application icons.
-CMake copies it automatically and includes it in desktop ZIP packages.
+Desktop builds require CMake 3.20+ and a C17 compiler. The Inter fonts and
+application icon are embedded directly into the executable at build time, so no
+external `assets/` directory is needed at runtime.
 
 ## Automated releases
 
 The [GitHub Actions workflow](../.github/workflows/build.yml) builds Windows x64
 on Windows Server 2022 and Linux x64 on Ubuntu 22.04. Both jobs run CTest and
 native window smoke checks before uploading ZIP artifacts containing the
-executable, assets, documentation and licenses.
+standalone executable, documentation and third-party licenses.
 
 Successful pushes to `main` publish both ZIPs under [GitHub Releases](https://github.com/circles-00/native_spotify/releases).
 The first release uses the CMake project version; later releases increment the
@@ -58,7 +58,7 @@ Pop-Location
 .\build\Release\native_spotify.exe
 ```
 
-Create a ZIP containing the executable and assets:
+Create a ZIP containing the executable, documentation and licenses:
 
 ```powershell
 cmake --build build --config Release --target package

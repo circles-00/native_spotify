@@ -1,6 +1,7 @@
 #include "win32_canvas.h"
 #include "artwork_cache.h"
 #include "core.h"
+#include "embedded_fonts.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -952,24 +953,7 @@ bool windows_canvas_present(WindowsCanvas *backend, HDC destination, int width, 
 }
 
 void windows_load_font(void) {
-    AddFontResourceExW(L"assets\\Inter-Regular.ttf", FR_PRIVATE, NULL);
-    AddFontResourceExW(L"assets\\Inter-Bold.ttf", FR_PRIVATE, NULL);
-
-    wchar_t path[32768];
-    DWORD size = GetModuleFileNameW(NULL, path, 32768);
-
-    if (!size || size >= 32768) {
-        return;
-    }
-
-    wchar_t *slash = wcsrchr(path, L'\\');
-
-    if (!slash || (size_t)(slash - path) + 32 >= 32768) {
-        return;
-    }
-
-    wcscpy(slash + 1, L"assets\\Inter-Regular.ttf");
-    AddFontResourceExW(path, FR_PRIVATE, NULL);
-    wcscpy(slash + 1, L"assets\\Inter-Bold.ttf");
-    AddFontResourceExW(path, FR_PRIVATE, NULL);
+    DWORD count = 0;
+    AddFontMemResourceEx((void *)inter_regular_ttf, (DWORD)inter_regular_ttf_size, NULL, &count);
+    AddFontMemResourceEx((void *)inter_bold_ttf, (DWORD)inter_bold_ttf_size, NULL, &count);
 }

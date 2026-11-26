@@ -36,6 +36,35 @@ target_include_directories(core PUBLIC src src/core src/platform)
 target_compile_definitions(core PUBLIC NATIVE_SPOTIFY_CLIENT_ID="${SPOTIFY_CLIENT_ID}")
 target_link_libraries(core PUBLIC yyjson)
 
+set(EMBEDDED_INTER_REGULAR "${CMAKE_CURRENT_BINARY_DIR}/inter_regular_ttf.c")
+set(EMBEDDED_INTER_BOLD "${CMAKE_CURRENT_BINARY_DIR}/inter_bold_ttf.c")
+
+add_custom_command(
+  OUTPUT "${EMBEDDED_INTER_REGULAR}"
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/assets/Inter-Regular.ttf
+    -DOUTPUT=${EMBEDDED_INTER_REGULAR}
+    -DSYMBOL=inter_regular_ttf
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_font.cmake
+  DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/Inter-Regular.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_font.cmake"
+  VERBATIM
+)
+
+add_custom_command(
+  OUTPUT "${EMBEDDED_INTER_BOLD}"
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/assets/Inter-Bold.ttf
+    -DOUTPUT=${EMBEDDED_INTER_BOLD}
+    -DSYMBOL=inter_bold_ttf
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_font.cmake
+  DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/Inter-Bold.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_font.cmake"
+  VERBATIM
+)
+
 add_library(presentation STATIC
   src/ui/controller.c
   src/ui/scene.c
@@ -53,6 +82,8 @@ add_library(presentation STATIC
   src/ui/canvas_raster.c
   src/ui/artwork_cache.c
   src/ui/artwork_store.c
+  "${EMBEDDED_INTER_REGULAR}"
+  "${EMBEDDED_INTER_BOLD}"
 )
 target_include_directories(presentation PUBLIC src/ui)
 target_link_libraries(presentation PUBLIC core)
@@ -116,18 +147,14 @@ endif()
 
 # Soloist is downloaded from Spotify at runtime; Spotify does not allow redistributing it.
 install(TARGETS native_spotify RUNTIME DESTINATION .)
-install(DIRECTORY assets DESTINATION .)
 install(FILES README.md LICENSE DESTINATION .)
 install(FILES vendor/yyjson/LICENSE DESTINATION licenses RENAME yyjson-LICENSE)
+install(FILES assets/Inter-LICENSE.txt DESTINATION licenses RENAME Inter-LICENSE.txt)
 install(DIRECTORY docs DESTINATION .)
 set(CPACK_GENERATOR ZIP)
 set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
 set(CPACK_PACKAGE_FILE_NAME "native-spotify-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 include(CPack)
-
-add_custom_command(TARGET native_spotify POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_CURRENT_SOURCE_DIR}/assets $<TARGET_FILE_DIR:native_spotify>/assets)
 
 if(MSVC)
   target_compile_options(core PUBLIC /utf-8)

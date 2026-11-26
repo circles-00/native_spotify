@@ -56,8 +56,9 @@ audio-verification caveats.
 ## Get started
 
 Download the Windows or Linux x64 ZIP from [Releases](https://github.com/circles-00/native_spotify/releases/latest),
-or [build from source](docs/BUILDING.md). Extract the archive and keep the `assets/`
-directory beside the executable. Linux packages require [system libraries](docs/BUILDING.md#prebuilt-linux-packages).
+or [build from source](docs/BUILDING.md). Extract and run the executable—fonts and
+icons are embedded directly in the binary, so no `assets/` directory is needed.
+Linux packages require [system libraries](docs/BUILDING.md#prebuilt-linux-packages).
 
 1. Open the app and choose **Continue with Spotify**. Approve access in your browser.
 2. Pick a track. For local audio, **Play on this computer** guides you through
@@ -105,5 +106,8 @@ your own risk.
 
 ## License
 
-[MIT](LICENSE). Bundled dependencies and fonts retain their respective licenses.
-Spotify artwork, trademarks and other third-party content are not covered by this license.
+[MIT](LICENSE). Bundled dependencies and embedded fonts retain their respective
+licenses: [Inter](assets/Inter-LICENSE.txt) (SIL Open Font License 1.1) and
+[yyjson](vendor/yyjson/LICENSE) (MIT); both license texts are included in
+`licenses/` in release packages. Spotify artwork, trademarks and other
+third-party content are not covered by this license.
