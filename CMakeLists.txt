@@ -4,12 +4,6 @@ project(native_spotify VERSION 0.1.0 LANGUAGES C)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 option(ENABLE_SANITIZERS "Enable address/undefined sanitizers" OFF)
-set(SPOTIFY_CLIENT_ID "0147b268b69346959cdf54f65609db9e" CACHE STRING "Public OAuth client ID for this application")
-string(LENGTH "${SPOTIFY_CLIENT_ID}" CLIENT_ID_LENGTH)
-
-if(NOT CLIENT_ID_LENGTH EQUAL 32 OR NOT SPOTIFY_CLIENT_ID MATCHES "^[0-9a-fA-F]+$")
-  message(FATAL_ERROR "SPOTIFY_CLIENT_ID must be the application's 32-character public client ID")
-endif()
 
 add_library(yyjson STATIC vendor/yyjson/yyjson.c)
 target_include_directories(yyjson PUBLIC vendor/yyjson)
@@ -33,7 +27,6 @@ add_library(core STATIC
   src/platform/loopback.c
 )
 target_include_directories(core PUBLIC src src/core src/platform)
-target_compile_definitions(core PUBLIC NATIVE_SPOTIFY_CLIENT_ID="${SPOTIFY_CLIENT_ID}")
 target_link_libraries(core PUBLIC yyjson)
 
 set(EMBEDDED_INTER_REGULAR "${CMAKE_CURRENT_BINARY_DIR}/inter_regular_ttf.c")

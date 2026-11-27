@@ -717,10 +717,23 @@ void scene_layout(Scene *scene, const View *view, float width, float height) {
     }
 
     if (scene->login_screen) {
-        scene->login_panel = (Rect){width / 2 - 240, height / 2 - 224, 480, 448};
-        scene->focus = HIT_ACCOUNT;
-        hit(scene, HIT_ACCOUNT, (Rect){width / 2 - 160, scene->login_panel.y + 266, 320, 48},
-            !view->connecting);
+        if (!scene->client_id_synced && view->settings.client_id[0]) {
+            snprintf(scene->client_id, sizeof(scene->client_id), "%s", view->settings.client_id);
+            scene->client_id_synced = true;
+        }
+
+        scene->login_panel = (Rect){width / 2 - 260, height / 2 - 268, 520, 536};
+        Rect panel = scene->login_panel;
+
+        if (!was_login || (scene->focus != HIT_CLIENT_ID && scene->focus != HIT_ACCOUNT &&
+                           scene->focus != HIT_DEV_DASHBOARD && scene->focus != HIT_DEV_GUIDE)) {
+            scene->focus = client_id_valid(scene->client_id) ? HIT_ACCOUNT : HIT_CLIENT_ID;
+        }
+
+        hit(scene, HIT_DEV_DASHBOARD, (Rect){panel.x + 40, panel.y + 230, 212, 34}, true);
+        hit(scene, HIT_DEV_GUIDE, (Rect){panel.x + 268, panel.y + 230, 212, 34}, true);
+        hit(scene, HIT_CLIENT_ID, (Rect){panel.x + 40, panel.y + 306, 440, 40}, !view->connecting);
+        hit(scene, HIT_ACCOUNT, (Rect){width / 2 - 160, panel.y + 370, 320, 48}, !view->connecting);
         return;
     }
 

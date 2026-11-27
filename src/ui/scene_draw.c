@@ -139,7 +139,9 @@ static float measure_prefix(Canvas *canvas, const char *value, unsigned bytes) {
 
 static void input_text(Scene *scene, Canvas *canvas, Rect rect, const char *value, const char *placeholder,
                        HitId id, bool focused) {
-    InputState *state = id == HIT_LIST_FILTER ? &scene->filter_input : &scene->search_input;
+    InputState *state = id == HIT_CLIENT_ID    ? &scene->client_id_input
+                        : id == HIT_LIST_FILTER ? &scene->filter_input
+                                                : &scene->search_input;
     unsigned len = (unsigned)strlen(value);
 
     if (state->cursor > len) {
@@ -1032,19 +1034,57 @@ static void login(Scene *scene, const View *view, Canvas *canvas) {
     Rect panel = scene->login_panel;
     canvas->gradient(canvas->context, panel, 16, DARK_TILE, PANEL);
     canvas->clip(canvas->context, panel, 16);
-    canvas_brand_logo(canvas, (Rect){panel.x + panel.w / 2 - 24, panel.y + 30, 48, 48});
-    centered_text(canvas, "Native Spotify", (Rect){panel.x + 40, panel.y + 84, panel.w - 80, 30}, 21, true,
+    canvas_brand_logo(canvas, (Rect){panel.x + panel.w / 2 - 24, panel.y + 24, 48, 48});
+    centered_text(canvas, "Native Spotify", (Rect){panel.x + 40, panel.y + 76, panel.w - 80, 26}, 20, true,
                   WHITE);
-    centered_text(canvas, "Log in to Spotify", (Rect){panel.x + 32, panel.y + 136, panel.w - 64, 48}, 32,
+    centered_text(canvas, "Log in to Spotify", (Rect){panel.x + 32, panel.y + 108, panel.w - 64, 40}, 28,
                   true, WHITE);
-    centered_text(canvas, "Your music and playlists. A lighter native player.",
-                  (Rect){panel.x + 40, panel.y + 196, panel.w - 80, 44}, 14, false, MUTED);
-    button(scene, canvas, HIT_ACCOUNT, view->connecting ? "Connecting…" : "Continue with Spotify", ICON_LINK,
-           true, PANEL, 18, false);
-    centered_text(canvas, "Secure sign-in opens in your browser.",
-                  (Rect){panel.x + 40, panel.y + 330, panel.w - 80, 24}, 12, false, MUTED);
-    centered_text(canvas, view->status, (Rect){panel.x + 40, panel.y + 370, panel.w - 80, 56}, 12, false,
-                  MUTED);
+
+    text(canvas, "1. Create an app in Spotify Developer Dashboard.",
+         (Rect){panel.x + 40, panel.y + 158, panel.w - 80, 20}, 12, false, MUTED);
+    text(canvas, "2. Add Redirect URI: http://127.0.0.1:43821/callback",
+         (Rect){panel.x + 40, panel.y + 178, panel.w - 80, 20}, 12, false, WHITE);
+    text(canvas, "3. Copy the Client ID and paste it below (saved once).",
+         (Rect){panel.x + 40, panel.y + 198, panel.w - 80, 20}, 12, false, MUTED);
+
+    const HitId link_ids[] = {HIT_DEV_DASHBOARD, HIT_DEV_GUIDE};
+    const char *link_labels[] = {"Developer Dashboard", "Setup guide"};
+
+    for (unsigned i = 0; i < 2; ++i) {
+        Rect link = scene->hits[link_ids[i]].rect;
+        float hover = scene->hover[link_ids[i]];
+        canvas->box(canvas->context, link, link.h / 2, color_mix(DARK_CONTROL, 0x3e3e3e, hover));
+        canvas_icon(canvas, ICON_EXTERNAL_LINK, (Rect){link.x + 14, link.y + 10, 14, 14},
+                    color_mix(MUTED, WHITE, hover));
+        canvas->text(canvas->context, link_labels[i], (Rect){link.x + 34, link.y, link.w - 44, link.h}, 12,
+                     TEXT_BOLD | TEXT_VCENTER, WHITE);
+    }
+
+    text(canvas, "Spotify Client ID", (Rect){panel.x + 40, panel.y + 282, panel.w - 80, 20}, 12, true, WHITE);
+    Rect field = scene->hits[HIT_CLIENT_ID].rect;
+    bool focused = scene->focus == HIT_CLIENT_ID;
+    Color fill = color_mix(DARK_CHROME, DARK_HOVER, scene->hover[HIT_CLIENT_ID]);
+
+    if (focused) {
+        canvas->box(canvas->context, field, 8, GREEN);
+        canvas->box(canvas->context, (Rect){field.x + 1, field.y + 1, field.w - 2, field.h - 2}, 7, fill);
+    } else {
+        canvas->box(canvas->context, field, 8, DARK_BORDER);
+        canvas->box(canvas->context, (Rect){field.x + 1, field.y + 1, field.w - 2, field.h - 2}, 7, fill);
+    }
+
+    input_text(scene, canvas, (Rect){field.x + 12, field.y + 4, field.w - 24, field.h - 8}, scene->client_id,
+               "Paste 32-character Client ID", HIT_CLIENT_ID, focused);
+
+    button(scene, canvas, HIT_ACCOUNT, view->connecting ? "Check your browser…" : "Continue with Spotify",
+           ICON_LINK, true, PANEL, 18, false);
+    centered_text(canvas,
+                  view->connecting ? "Approve Spotify access in your browser, then return here."
+                                   : "Secure sign-in opens in your browser.",
+                  (Rect){panel.x + 40, panel.y + 430, panel.w - 80, 22}, 12, view->connecting,
+                  view->connecting ? WHITE : MUTED);
+    centered_text(canvas, view->status, (Rect){panel.x + 40, panel.y + 458, panel.w - 80, 56}, 12, false,
+                  view->status[0] && !view->connecting ? DARK_ERROR : view->connecting ? GREEN : MUTED);
     canvas->unclip(canvas->context);
 }
 

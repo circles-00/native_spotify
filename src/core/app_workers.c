@@ -278,6 +278,10 @@ static void run_session(Worker *worker, Job *job) {
     Spotify *spotify = &worker->spotify;
     platform_wipe(&spotify->tokens, sizeof(spotify->tokens));
 
+    platform_lock();
+    snprintf(spotify->client_id, sizeof(spotify->client_id), "%s", app_state.view.settings.client_id);
+    platform_unlock();
+
     if (job->action == ACTION_DISCONNECT) {
         engine_forget();
         spotify_disconnect(spotify);
@@ -1235,7 +1239,7 @@ void app_workers_configure(void) {
         app_state.workers[i].jobs = i == LANE_SYNC ? &app_state.sync_job : app_state.worker_jobs[i];
         app_state.workers[i].capacity = i == LANE_SYNC ? 1 : LANE_CAPACITY;
         snprintf(app_state.workers[i].spotify.client_id, sizeof(app_state.workers[i].spotify.client_id), "%s",
-                 NATIVE_SPOTIFY_CLIENT_ID);
+                 app_state.view.settings.client_id);
         app_state.workers[i].spotify.notify = login_progress;
     }
 

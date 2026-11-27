@@ -4,10 +4,6 @@ set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(repo ${CMAKE_CURRENT_SOURCE_DIR}/../../../../..)
 
-if(NOT SPOTIFY_CLIENT_ID MATCHES "^[0-9a-fA-F]+$")
-  message(FATAL_ERROR "Pass -DSPOTIFY_CLIENT_ID from Gradle; it comes from the root CMakeLists.txt.")
-endif()
-
 # The same shared core the desktop builds, plus the Android platform adapter.
 add_library(native_spotify_android SHARED
     bridge.c
@@ -33,8 +29,7 @@ add_library(native_spotify_android SHARED
     ${repo}/vendor/yyjson/yyjson.c)
 target_include_directories(native_spotify_android PRIVATE
     ${repo}/src ${repo}/src/core ${repo}/src/ui ${repo}/src/platform ${repo}/vendor/yyjson)
-target_compile_definitions(native_spotify_android PRIVATE
-    NATIVE_SPOTIFY_CLIENT_ID="${SPOTIFY_CLIENT_ID}" YYJSON_DISABLE_UTILS=1)
+target_compile_definitions(native_spotify_android PRIVATE YYJSON_DISABLE_UTILS=1)
 target_compile_options(native_spotify_android PRIVATE -ffunction-sections -fdata-sections -Wall -Wextra)
 target_link_options(native_spotify_android PRIVATE -Wl,--gc-sections)
 set_target_properties(native_spotify_android PROPERTIES C_VISIBILITY_PRESET hidden)

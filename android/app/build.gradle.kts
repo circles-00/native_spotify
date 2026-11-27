@@ -4,9 +4,6 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"
 }
 
-val clientId = Regex("SPOTIFY_CLIENT_ID \"([0-9a-fA-F]{32})\"")
-    .find(providers.fileContents(layout.projectDirectory.file("../../CMakeLists.txt")).asText.get())
-    ?.groupValues?.get(1) ?: error("Missing SPOTIFY_CLIENT_ID in CMakeLists.txt")
 /** Constants of a C enum, by name, so Kotlin never hard-codes the core's numbering. */
 fun cEnum(header: String, type: String): List<String> =
     providers.fileContents(layout.projectDirectory.file("../../src/$header")).asText.get()
@@ -28,7 +25,6 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         ndk { abiFilters.add("arm64-v8a") }
-        buildConfigField("String", "SPOTIFY_CLIENT_ID", "\"$clientId\"")
         coreEnums.forEach { names -> names.forEachIndexed { index, name -> buildConfigField("int", name, "$index") } }
         listOf("BODY", "CHROME", "TILE", "HOVER", "SELECTED", "BORDER", "TEXT", "MUTED", "ACCENT",
             "BRAND", "PROGRESS", "ERROR", "CONTROL", "SHEET", "LIKED_FROM", "LIKED_TO").forEach { role ->
@@ -55,7 +51,6 @@ android {
     kotlinOptions { jvmTarget = "17" }
     sourceSets["main"].assets.srcDir("../termux")
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
-    defaultConfig.externalNativeBuild { cmake { arguments += "-DSPOTIFY_CLIENT_ID=$clientId" } }
 }
 
 dependencies {

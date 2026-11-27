@@ -184,7 +184,7 @@ void scene_press(Scene *scene, const View *view, float x, float y, uint64_t now)
     scene->click_ms = now;
     scene->focus = target;
 
-    if (target == HIT_SEARCH || target == HIT_LIST_FILTER) {
+    if (target == HIT_SEARCH || target == HIT_LIST_FILTER || target == HIT_CLIENT_ID) {
         if (scene->double_click) {
             scene_select_input_all(scene);
             scene->input_click_pending = false;
@@ -363,6 +363,9 @@ static bool active_input(Scene *scene, char **buffer, InputState **state) {
     if (scene->focus == HIT_LIST_FILTER) {
         *buffer = scene->list_filter;
         *state = &scene->filter_input;
+    } else if (scene->focus == HIT_CLIENT_ID) {
+        *buffer = scene->client_id;
+        *state = &scene->client_id_input;
     } else if (scene->focus == HIT_SEARCH) {
         *buffer = scene->query;
         *state = &scene->search_input;
@@ -548,7 +551,7 @@ bool scene_key_mods(Scene *scene, const View *view, SceneKey key, bool shift, bo
                 scene->search_history_open =
                     next == HIT_SEARCH || next == HIT_SEARCH_CLEAR || next >= HIT_HISTORY_FIRST;
 
-                if (next == HIT_SEARCH || next == HIT_LIST_FILTER) {
+                if (next == HIT_SEARCH || next == HIT_LIST_FILTER || next == HIT_CLIENT_ID) {
                     scene_select_input_all(scene);
                 } else {
                     scene->select_all = false;
@@ -568,6 +571,14 @@ bool scene_key_mods(Scene *scene, const View *view, SceneKey key, bool shift, bo
         unsigned end = state->cursor < state->anchor ? state->anchor : state->cursor;
 
         if (key == KEY_ENTER) {
+            if (scene->focus == HIT_CLIENT_ID) {
+                if (app_set_client_id(scene->client_id)) {
+                    app_connect();
+                }
+
+                return true;
+            }
+
             if (scene->focus == HIT_LIST_FILTER) {
                 app_list_filter(scene->list_filter);
                 return true;

@@ -144,9 +144,12 @@ an existing directory.
 
 ## Authentication notes
 
-The public client ID is configured in the root `CMakeLists.txt`. Packagers can
-override it using `-DSPOTIFY_CLIENT_ID=...`; listeners do not need to configure it.
-The browser callback is `http://127.0.0.1:43821/callback`.
+No Spotify Client ID is hardcoded in the build. On first launch, enter your own
+32-character Client ID from the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
+(see Spotify's [App Setup Guide](https://developer.spotify.com/documentation/web-api/concepts/apps))
+in the login screen. It is saved once in `settings.json` and reused automatically
+on future launches. Add `http://127.0.0.1:43821/callback` as the Redirect URI
+in your Spotify app settings.
 
 If an older session lacks a permission, reauthorize using the relevant in-app
 prompt. Refreshing a token cannot add permissions, and reconnecting does not

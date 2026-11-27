@@ -34,6 +34,7 @@ static void load_settings(void) {
     yyjson_val *library_width = yyjson_obj_get(root, "library_width");
     yyjson_val *library_collapsed = yyjson_obj_get(root, "library_collapsed");
     yyjson_val *panel_width = yyjson_obj_get(root, "panel_width");
+    yyjson_val *client_id = yyjson_obj_get(root, "client_id");
 
     if (yyjson_is_bool(search_radio)) {
         app_state.view.settings.search_radio = yyjson_get_bool(search_radio);
@@ -54,6 +55,11 @@ static void load_settings(void) {
         app_state.view.settings.panel_width = (float)yyjson_get_num(panel_width);
     }
 
+    if (yyjson_is_str(client_id) && client_id_valid(yyjson_get_str(client_id))) {
+        snprintf(app_state.view.settings.client_id, sizeof(app_state.view.settings.client_id), "%s",
+                 yyjson_get_str(client_id));
+    }
+
     yyjson_doc_free(doc);
 }
 
@@ -68,6 +74,10 @@ static void save_settings_locked(void) {
         yyjson_mut_obj_add_real(doc, root, "library_width", app_state.view.settings.library_width);
         yyjson_mut_obj_add_bool(doc, root, "library_collapsed", app_state.view.settings.library_collapsed);
         yyjson_mut_obj_add_real(doc, root, "panel_width", app_state.view.settings.panel_width);
+
+        if (client_id_valid(app_state.view.settings.client_id)) {
+            yyjson_mut_obj_add_str(doc, root, "client_id", app_state.view.settings.client_id);
+        }
     }
 
     char *text = yyjson_mut_write(doc, 0, NULL);
@@ -1110,6 +1120,23 @@ void app_action(Action action) {
     }
 
     if (action == ACTION_RESTORE || action == ACTION_CONNECT || action == ACTION_DISCONNECT) {
+        if (action == ACTION_RESTORE || action == ACTION_CONNECT) {
+            platform_lock();
+            bool has_id = client_id_valid(app_state.view.settings.client_id);
+
+            if (!has_id && action == ACTION_CONNECT) {
+                snprintf(app_state.view.status, sizeof(app_state.view.status),
+                         "Enter your 32-character Spotify Client ID first.");
+            }
+
+            platform_unlock();
+
+            if (!has_id) {
+                app_wake();
+                return;
+            }
+        }
+
         if (action == ACTION_DISCONNECT) {
             clear_saved_playback();
         }
@@ -1869,6 +1896,59 @@ bool app_engine_key(const char *text, size_t size) {
 
 void app_engine_dashboard(void) {
     platform_open_url(ENGINE_DASHBOARD_URL);
+}
+
+void app_open_developer_dashboard(void) {
+    platform_open_url("https://developer.spotify.com/dashboard");
+}
+
+void app_open_setup_guide(void) {
+    platform_open_url("https://developer.spotify.com/documentation/web-api/concepts/apps");
+}
+
+bool app_set_client_id(const char *client_id) {
+    char trimmed[33] = {0};
+
+    if (client_id) {
+        while (*client_id == ' ' || *client_id == '\t' || *client_id == '\r' || *client_id == '\n') {
+            ++client_id;
+        }
+
+        size_t len = strlen(client_id);
+
+        while (len > 0 && (client_id[len - 1] == ' ' || client_id[len - 1] == '\t' ||
+                           client_id[len - 1] == '\r' || client_id[len - 1] == '\n')) {
+            --len;
+        }
+
+        if (len < sizeof(trimmed)) {
+            memcpy(trimmed, client_id, len);
+            trimmed[len] = 0;
+        }
+    }
+
+    if (!client_id_valid(trimmed)) {
+        platform_lock();
+        snprintf(app_state.view.status, sizeof(app_state.view.status),
+                 "Enter a valid 32-character Spotify Client ID from the Developer Dashboard.");
+        platform_unlock();
+        app_wake();
+        return false;
+    }
+
+    platform_lock();
+    snprintf(app_state.view.settings.client_id, sizeof(app_state.view.settings.client_id), "%s", trimmed);
+
+    for (unsigned i = 0; i < LANE_COUNT; ++i) {
+        snprintf(app_state.workers[i].spotify.client_id, sizeof(app_state.workers[i].spotify.client_id), "%s",
+                 trimmed);
+    }
+
+    app_state.view.status[0] = 0;
+    save_settings_locked();
+    platform_unlock();
+    app_wake();
+    return true;
 }
 
 /* Stops Soloist but keeps the key; an on-demand engine starts again with the next play. */

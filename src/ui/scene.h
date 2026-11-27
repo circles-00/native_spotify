@@ -34,6 +34,9 @@ typedef enum {
     HIT_SEARCH,
     HIT_SEARCH_CLEAR,
     HIT_ACCOUNT,
+    HIT_CLIENT_ID,
+    HIT_DEV_DASHBOARD,
+    HIT_DEV_GUIDE,
     HIT_TRACKS,
     HIT_ALBUMS,
     HIT_PLAYLISTS,
@@ -257,7 +260,9 @@ typedef struct {
     uint64_t search_due;
     char query[SEARCH_CAPACITY];
     char list_filter[SEARCH_CAPACITY];
-    InputState search_input, filter_input;
+    char client_id[SEARCH_CAPACITY];
+    InputState search_input, filter_input, client_id_input;
+    bool client_id_synced;
     float input_click_x;
     bool input_click_pending;
     Rect login_panel;

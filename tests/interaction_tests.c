@@ -430,23 +430,34 @@ static void test_login_screen(void) {
     Scene scene;
     scene_init(&scene);
     View view = app_snapshot();
+    view.settings.client_id[0] = 0;
     scene_layout(&scene, &view, 1280, 800);
-    CHECK(scene.login_screen && scene.focus == HIT_ACCOUNT);
-    CHECK(scene.hits[HIT_ACCOUNT].enabled);
+    CHECK(scene.login_screen && scene.focus == HIT_CLIENT_ID);
+    CHECK(scene.hits[HIT_CLIENT_ID].enabled && scene.hits[HIT_ACCOUNT].enabled);
+    CHECK(scene.hits[HIT_DEV_DASHBOARD].enabled && scene.hits[HIT_DEV_GUIDE].enabled);
     CHECK(!scene.hits[HIT_ROW_FIRST].enabled && !scene.hits[HIT_CARD_FIRST].enabled);
     CHECK(scene.login_panel.x + scene.login_panel.w / 2 == 640);
     CHECK(scene.login_panel.y + scene.login_panel.h / 2 == 400);
     CHECK(scene.hits[HIT_ACCOUNT].rect.x + scene.hits[HIT_ACCOUNT].rect.w / 2 == 640);
     CHECK(!scene.hits[HIT_SEARCH].enabled && !scene.hits[HIT_VOLUME].enabled);
-    CHECK(client_id_valid(NATIVE_SPOTIFY_CLIENT_ID));
+    CHECK(client_id_valid("0123456789abcdef0123456789abcdef"));
+    CHECK(!client_id_valid(""));
     CHECK(app_tick(false) == -1 && app_tick(true) == -1);
+
+    Scene saved_login;
+    scene_init(&saved_login);
+    snprintf(view.settings.client_id, sizeof(view.settings.client_id), "%s",
+             "0123456789abcdef0123456789abcdef");
+    scene_layout(&saved_login, &view, 1280, 800);
+    CHECK(saved_login.login_screen && saved_login.focus == HIT_ACCOUNT);
+    CHECK(!strcmp(saved_login.client_id, "0123456789abcdef0123456789abcdef"));
 
     scene_layout(&scene, &view, 960, 640);
     CHECK(scene.login_panel.x + scene.login_panel.w / 2 == 480);
     CHECK(scene.login_panel.y + scene.login_panel.h / 2 == 320);
     view.connecting = true;
     scene_layout(&scene, &view, 960, 640);
-    CHECK(!scene.hits[HIT_ACCOUNT].enabled);
+    CHECK(!scene.hits[HIT_ACCOUNT].enabled && !scene.hits[HIT_CLIENT_ID].enabled);
     view.connecting = false;
     view.authenticated = true;
     scene_layout(&scene, &view, 960, 640);
@@ -1842,7 +1853,7 @@ static void test_rendering(void) {
         } else if (scene.login_screen) {
             CHECK((pixels[(unsigned)panel.y * stride + (unsigned)panel.x] & 0xffffff) == DARK_BODY);
             check_text_center(pixels, stride, scene.hits[HIT_ACCOUNT].rect, true);
-            check_text_center(pixels, stride, (Rect){panel.x + 32, panel.y + 136, panel.w - 64, 48}, false);
+            check_text_center(pixels, stride, (Rect){panel.x + 32, panel.y + 108, panel.w - 64, 40}, false);
         } else {
             CHECK((pixels[0] & 0xffffff) == DARK_CHROME);
             CHECK((pixels[(unsigned)scene.player.y * stride] & 0xffffff) == DARK_BORDER);
@@ -2051,8 +2062,10 @@ static void test_controller_and_raster(void) {
     CHECK(ui_controller_cursor(&controller) == UI_CURSOR_ARROW);
     ui_controller_layout(&controller, 1280, 800);
     CHECK(controller.scene.login_screen);
-    CHECK(!ui_controller_is_editing(&controller));
+    CHECK(controller.scene.focus == HIT_CLIENT_ID && ui_controller_is_editing(&controller));
     CHECK(ui_controller_shortcut(&controller, 'l', true) == UI_SHORTCUT_HANDLED);
+    CHECK(controller.scene.focus == HIT_CLIENT_ID && ui_controller_is_editing(&controller));
+    controller.scene.focus = HIT_ACCOUNT;
     CHECK(!ui_controller_is_editing(&controller));
 
     controller.scene.hot = HIT_SEARCH;

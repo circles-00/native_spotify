@@ -58,9 +58,15 @@ void ui_controller_destroy(UiController *controller) {
 }
 
 bool ui_controller_is_editing(const UiController *controller) {
-    return !controller->scene.intro_screen && !controller->scene.login_screen &&
-           !controller->scene.lyrics_fullscreen &&
-           (controller->scene.focus == HIT_SEARCH || controller->scene.focus == HIT_LIST_FILTER);
+    if (controller->scene.intro_screen || controller->scene.lyrics_fullscreen) {
+        return false;
+    }
+
+    if (controller->scene.login_screen) {
+        return controller->scene.focus == HIT_CLIENT_ID;
+    }
+
+    return controller->scene.focus == HIT_SEARCH || controller->scene.focus == HIT_LIST_FILTER;
 }
 
 UiCursor ui_controller_cursor(const UiController *controller) {
@@ -69,7 +75,8 @@ UiCursor ui_controller_cursor(const UiController *controller) {
         return UI_CURSOR_RESIZE;
     }
 
-    if (controller->scene.hot == HIT_SEARCH || controller->scene.hot == HIT_LIST_FILTER) {
+    if (controller->scene.hot == HIT_SEARCH || controller->scene.hot == HIT_LIST_FILTER ||
+        controller->scene.hot == HIT_CLIENT_ID) {
         return UI_CURSOR_IBEAM;
     }
 
@@ -256,6 +263,13 @@ UiShortcutResult ui_controller_shortcut(UiController *controller, char key, bool
 
         if (key == 'x') {
             return UI_SHORTCUT_CUT_SEARCH;
+        }
+
+        if (key == 'u' && scene->focus == HIT_CLIENT_ID) {
+            scene->client_id[0] = 0;
+            scene->client_id_input = (InputState){0};
+            scene->select_all = false;
+            return UI_SHORTCUT_HANDLED;
         }
 
         if (key == 'u' && scene->focus == HIT_LIST_FILTER) {

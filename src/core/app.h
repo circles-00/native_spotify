@@ -82,6 +82,7 @@ typedef struct {
     float library_width;
     float panel_width;
     bool library_collapsed;
+    char client_id[33];
 } AppSettings;
 
 typedef struct {
@@ -187,6 +188,9 @@ void app_engine_dashboard(void);
 void app_engine_forget(void);
 void app_engine_stop(void);
 bool app_set_search_radio(bool enabled);
+bool app_set_client_id(const char *client_id);
+void app_open_developer_dashboard(void);
+void app_open_setup_guide(void);
 void app_set_layout(float library_width, bool library_collapsed, float panel_width);
 void app_snapshot_into(View *out);
 View app_snapshot(void);

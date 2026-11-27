@@ -60,15 +60,20 @@ or [build from source](docs/BUILDING.md). Extract and run the executable—fonts
 icons are embedded directly in the binary, so no `assets/` directory is needed.
 Linux packages require [system libraries](docs/BUILDING.md#prebuilt-linux-packages).
 
-1. Open the app and choose **Continue with Spotify**. Approve access in your browser.
-2. Pick a track. For local audio, **Play on this computer** guides you through
+1. Create a free app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
+   (see Spotify's [App Setup Guide](https://developer.spotify.com/documentation/web-api/concepts/apps))
+   and add `http://127.0.0.1:43821/callback` as a Redirect URI.
+2. Open the app, paste your 32-character **Spotify Client ID** on the login screen
+   (it is saved once and persisted across launches), and choose **Continue with Spotify**.
+   Approve access in your browser.
+3. Pick a track. For local audio, **Play on this computer** guides you through
    creating and pasting your own Soloist key. **Spotify Premium is required.**
-3. Pair once from an official Spotify app on the same network: select
+4. Pair once from an official Spotify app on the same network: select
    **Native Spotify** in its device list. After pairing, the client manages the player.
 
-The public client ID is built in; listeners do not need to register a developer
-app. Soloist is downloaded from Spotify at runtime, not bundled or redistributed.
-Linux also needs an unlocked Secret Service provider such as GNOME Keyring.
+No Spotify Client ID is hardcoded in the repository or release binaries; each
+listener supplies their own Client ID once on first launch. Soloist is downloaded
+from Spotify at runtime, not bundled or redistributed.
 
 **Desktop shortcuts:** `Ctrl+L` focuses search, `Space` toggles playback outside
 text fields, `Tab` / `Shift+Tab` moves focus, and `Escape` dismisses panels or popups.

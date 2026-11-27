@@ -51,7 +51,6 @@ internal object CoreHost {
         }
 
         val secrets = Secrets(context)
-        secrets.put(account(BuildConfig.SPOTIFY_CLIENT_ID), null)
         secrets.put("catalog", null)
         prefs.edit().putInt("sign_in_version", 1).apply()
     }

@@ -721,7 +721,16 @@ void scene_activate(Scene *scene, const View *view, HitId id) {
             return;
         }
 
-        app_connect();
+        if (app_set_client_id(scene->client_id)) {
+            app_connect();
+        }
+
+        return;
+    case HIT_DEV_DASHBOARD:
+        app_open_developer_dashboard();
+        return;
+    case HIT_DEV_GUIDE:
+        app_open_setup_guide();
         return;
     case HIT_REFRESH:
         app_action(ACTION_REFRESH);
