@@ -350,11 +350,11 @@ void panel_scene_draw(Scene *scene, const View *view, Canvas *canvas) {
     }
 
     if (scene->panel == PANEL_QUEUE && scene->panel_recent) {
-        label(canvas, "Recently played albums", (Rect){rect.x + 11, rect.y + 54, rect.w - 22, 22}, 13, true,
+        label(canvas, "Recently played", (Rect){rect.x + 11, rect.y + 54, rect.w - 22, 22}, 13, true,
               DARK_TEXT);
 
         if (!view->recent_count) {
-            label(canvas, "Your recently played albums will appear here.",
+            label(canvas, "Your recently played songs will appear here.",
                   (Rect){rect.x + 11, rect.y + 87, rect.w - 22, 48}, 12, false, DARK_MUTED);
         }
 

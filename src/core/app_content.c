@@ -1,9 +1,11 @@
 #include "app_internal.h"
 #include "catalog.h"
+#include "yyjson.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "track_order.h"
 
@@ -1049,9 +1051,15 @@ bool app_browse_song_radio(const CatalogItem *item) {
 
     Job job = {.action = ACTION_BROWSE, .browse = {.kind = BROWSE_SONG_RADIO}, .item = *item};
     memcpy(job.browse.id, item->id, sizeof(job.browse.id));
-    copy_utf8(job.browse.title, sizeof(job.browse.title) - sizeof(" Radio") + 1,
-              item->title[0] ? item->title : "Song");
-    strcat(job.browse.title, " Radio");
+
+    if (!strncmp(item->title, "Daily Mix ", 10)) {
+        copy_utf8(job.browse.title, sizeof(job.browse.title), item->title);
+    } else {
+        copy_utf8(job.browse.title, sizeof(job.browse.title) - sizeof(" Radio") + 1,
+                  item->title[0] ? item->title : "Song");
+        strcat(job.browse.title, " Radio");
+    }
+
     copy_utf8(job.browse.artwork, sizeof(job.browse.artwork), item->artwork);
     return app_begin_browse(job);
 }
@@ -1368,9 +1376,355 @@ static void handle_save_collection(Spotify *spotify, const Job *job) {
     }
 }
 
+#define HOME_SUGGESTIONS_TTL_SECONDS (24u * 60u * 60u)
+#define HOME_SUGGESTIONS_FILE_LIMIT 32768u
+
+static bool suggestions_cache_path(char path[PLATFORM_PATH_CAPACITY]) {
+    char dir[PLATFORM_PATH_CAPACITY];
+
+    if (!platform_data_dir(dir, sizeof(dir))) {
+        return false;
+    }
+
+    int length = snprintf(path, PLATFORM_PATH_CAPACITY, "%s/home_suggestions.json", dir);
+    return length > 0 && length < PLATFORM_PATH_CAPACITY;
+}
+
+static const char *json_str(yyjson_val *obj, const char *key) {
+    const char *value = yyjson_get_str(yyjson_obj_get(obj, key));
+    return value ? value : "";
+}
+
+static void parse_cached_items(yyjson_val *array, ItemKind kind, CatalogItem *out, unsigned *count) {
+    *count = 0;
+
+    for (size_t i = 0; i < yyjson_arr_size(array) && *count < HOME_SUGGESTION_LIMIT; ++i) {
+        yyjson_val *entry = yyjson_arr_get(array, i);
+        const char *id = json_str(entry, "id");
+        const char *title = json_str(entry, "title");
+
+        if (!spotify_id_valid(id) || !title[0]) {
+            continue;
+        }
+
+        CatalogItem *item = &out[(*count)++];
+        *item = (CatalogItem){.kind = kind, .playable = true};
+        snprintf(item->id, sizeof(item->id), "%s", id);
+        copy_utf8(item->title, sizeof(item->title), title);
+        copy_utf8(item->detail, sizeof(item->detail), json_str(entry, "detail"));
+        copy_utf8(item->owner_id, sizeof(item->owner_id), json_str(entry, "owner_id"));
+        copy_utf8(item->album_title, sizeof(item->album_title), json_str(entry, "album_title"));
+
+        const char *artwork = json_str(entry, "artwork");
+
+        if (artwork_url_valid(artwork)) {
+            copy_utf8(item->artwork, sizeof(item->artwork), artwork);
+        }
+
+        const char *artist_id = json_str(entry, "artist_id");
+
+        if (spotify_id_valid(artist_id)) {
+            snprintf(item->artist_id, sizeof(item->artist_id), "%s", artist_id);
+        }
+
+        const char *album_id = json_str(entry, "album_id");
+
+        if (spotify_id_valid(album_id)) {
+            snprintf(item->album_id, sizeof(item->album_id), "%s", album_id);
+        }
+
+        yyjson_val *dur = yyjson_obj_get(entry, "duration_ms");
+
+        if (yyjson_is_uint(dur) && yyjson_get_uint(dur) <= UINT32_MAX) {
+            item->duration_ms = (unsigned)yyjson_get_uint(dur);
+            item->duration_known = item->duration_ms > 0;
+        }
+
+        item->explicit_content = yyjson_is_true(yyjson_obj_get(entry, "explicit"));
+    }
+}
+
+static unsigned mix_random_index(unsigned bound) {
+    unsigned char bytes[4] = {0};
+
+    if (bound <= 1 || !platform_random(bytes, sizeof(bytes))) {
+        return 0;
+    }
+
+    uint32_t value = (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) | ((uint32_t)bytes[2] << 16) |
+                     ((uint32_t)bytes[3] << 24);
+    return value % bound;
+}
+
+static void build_daily_mixes(const CatalogItem *recent, unsigned recent_count, CatalogItem *mixes,
+                              unsigned *mix_count) {
+    *mix_count = 0;
+    unsigned candidates[BROWSE_PAGE_SIZE];
+    unsigned candidate_count = 0;
+
+    for (unsigned i = 0; i < recent_count && candidate_count < BROWSE_PAGE_SIZE; ++i) {
+        const CatalogItem *song = &recent[i];
+
+        if (song->kind != ITEM_TRACK || !spotify_id_valid(song->id) || !song->detail[0]) {
+            continue;
+        }
+
+        bool seen_artist = false;
+
+        for (unsigned j = 0; j < candidate_count; ++j) {
+            if (!strcmp(recent[candidates[j]].detail, song->detail)) {
+                seen_artist = true;
+                break;
+            }
+        }
+
+        if (!seen_artist) {
+            candidates[candidate_count++] = i;
+        }
+    }
+
+    for (unsigned i = candidate_count; i > 1; --i) {
+        unsigned j = mix_random_index(i);
+        unsigned swap = candidates[i - 1];
+        candidates[i - 1] = candidates[j];
+        candidates[j] = swap;
+    }
+
+    for (unsigned i = 0; i < candidate_count && *mix_count < HOME_SUGGESTION_LIMIT; ++i) {
+        CatalogItem mix = recent[candidates[i]];
+        snprintf(mix.title, sizeof(mix.title), "Daily Mix %u", *mix_count + 1);
+        mixes[(*mix_count)++] = mix;
+    }
+}
+
+static bool load_home_suggestions_cache(CatalogItem *mixes, unsigned *mix_count, CatalogItem *playlists,
+                                        unsigned *playlist_count, CatalogItem *tracks, unsigned *track_count) {
+    *mix_count = 0;
+    *playlist_count = 0;
+    *track_count = 0;
+
+    char path[PLATFORM_PATH_CAPACITY];
+
+    if (!suggestions_cache_path(path)) {
+        return false;
+    }
+
+    char *text = malloc(HOME_SUGGESTIONS_FILE_LIMIT);
+
+    if (!text) {
+        return false;
+    }
+
+    bool ok = false;
+
+    if (platform_read_file(path, text, HOME_SUGGESTIONS_FILE_LIMIT)) {
+        yyjson_doc *doc = yyjson_read(text, strlen(text), 0);
+        yyjson_val *root = yyjson_doc_get_root(doc);
+        yyjson_val *saved = yyjson_obj_get(root, "saved_at");
+        time_t now = time(NULL);
+
+        if (yyjson_is_uint(saved) && now > 0) {
+            uint64_t saved_at = yyjson_get_uint(saved);
+            uint64_t now_s = (uint64_t)now;
+
+            if (now_s >= saved_at && now_s - saved_at < HOME_SUGGESTIONS_TTL_SECONDS) {
+                parse_cached_items(yyjson_obj_get(root, "mixes"), ITEM_TRACK, mixes, mix_count);
+                parse_cached_items(yyjson_obj_get(root, "playlists"), ITEM_PLAYLIST, playlists,
+                                   playlist_count);
+                parse_cached_items(yyjson_obj_get(root, "tracks"), ITEM_TRACK, tracks, track_count);
+                ok = *playlist_count > 0 || *track_count > 0;
+            }
+        }
+
+        yyjson_doc_free(doc);
+    }
+
+    free(text);
+    return ok;
+}
+
+static void append_cached_items(yyjson_mut_doc *doc, yyjson_mut_val *root, const char *key,
+                                const CatalogItem *items, unsigned count) {
+    yyjson_mut_val *arr = yyjson_mut_arr(doc);
+
+    if (!arr) {
+        return;
+    }
+
+    for (unsigned i = 0; i < count; ++i) {
+        const CatalogItem *item = &items[i];
+        yyjson_mut_val *entry = yyjson_mut_obj(doc);
+
+        if (!entry) {
+            continue;
+        }
+
+        yyjson_mut_obj_add_strcpy(doc, entry, "id", item->id);
+        yyjson_mut_obj_add_strcpy(doc, entry, "title", item->title);
+        yyjson_mut_obj_add_strcpy(doc, entry, "detail", item->detail);
+        yyjson_mut_obj_add_strcpy(doc, entry, "artwork", item->artwork);
+        yyjson_mut_obj_add_strcpy(doc, entry, "owner_id", item->owner_id);
+        yyjson_mut_obj_add_strcpy(doc, entry, "album_id", item->album_id);
+        yyjson_mut_obj_add_strcpy(doc, entry, "album_title", item->album_title);
+        yyjson_mut_obj_add_strcpy(doc, entry, "artist_id", item->artist_id);
+        yyjson_mut_obj_add_uint(doc, entry, "duration_ms", item->duration_ms);
+        yyjson_mut_obj_add_bool(doc, entry, "explicit", item->explicit_content);
+        yyjson_mut_arr_append(arr, entry);
+    }
+
+    yyjson_mut_obj_add_val(doc, root, key, arr);
+}
+
+static void save_home_suggestions_cache(const CatalogItem *mixes, unsigned mix_count,
+                                        const CatalogItem *playlists, unsigned playlist_count,
+                                        const CatalogItem *tracks, unsigned track_count) {
+    char path[PLATFORM_PATH_CAPACITY];
+    time_t now = time(NULL);
+
+    if ((!mix_count && !playlist_count && !track_count) || now <= 0 || !suggestions_cache_path(path)) {
+        return;
+    }
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+
+    if (root) {
+        yyjson_mut_obj_add_uint(doc, root, "saved_at", (uint64_t)now);
+        append_cached_items(doc, root, "mixes", mixes, mix_count);
+        append_cached_items(doc, root, "playlists", playlists, playlist_count);
+        append_cached_items(doc, root, "tracks", tracks, track_count);
+    }
+
+    char *text = yyjson_mut_write(doc, 0, NULL);
+
+    if (text) {
+        platform_write_file(path, text);
+    }
+
+    free(text);
+    yyjson_mut_doc_free(doc);
+}
+
+static void populate_home_suggestions(Spotify *spotify, const Job *job, const CatalogItem *recent,
+                                      unsigned recent_count, unsigned mask) {
+    if (!recent_count || !mask) {
+        return;
+    }
+
+    char skip_buf[BROWSE_PAGE_SIZE][23];
+    const char *skip_playlists[BROWSE_PAGE_SIZE];
+    unsigned skip_count = 0;
+    CatalogItem mixes[HOME_SUGGESTION_LIMIT];
+    CatalogItem playlists[HOME_SUGGESTION_LIMIT];
+    CatalogItem tracks[HOME_SUGGESTION_LIMIT];
+    unsigned mix_count = 0;
+    unsigned playlist_count = 0;
+    unsigned track_count = 0;
+
+    platform_lock();
+    bool current = job->session == app_state.view.session_revision;
+
+    if (current) {
+        const BrowsePage *mine = &app_state.view.library[2];
+
+        for (unsigned i = 0; i < mine->count && skip_count < BROWSE_PAGE_SIZE; ++i) {
+            if (spotify_id_valid(mine->items[i].id)) {
+                snprintf(skip_buf[skip_count], 23, "%s", mine->items[i].id);
+                skip_playlists[skip_count] = skip_buf[skip_count];
+                ++skip_count;
+            }
+        }
+
+        if (!(mask & HOME_CACHE_MIXES)) {
+            mix_count = app_state.view.daily_mix_count;
+            memcpy(mixes, app_state.view.daily_mixes, mix_count * sizeof(*mixes));
+        }
+
+        if (!(mask & HOME_CACHE_PLAYLISTS)) {
+            playlist_count = app_state.view.suggested_playlist_count;
+            memcpy(playlists, app_state.view.suggested_playlists, playlist_count * sizeof(*playlists));
+        }
+
+        if (!(mask & HOME_CACHE_TRACKS)) {
+            track_count = app_state.view.recommended_track_count;
+            memcpy(tracks, app_state.view.recommended_tracks, track_count * sizeof(*tracks));
+        }
+    }
+
+    platform_unlock();
+
+    if (!current) {
+        return;
+    }
+
+    if (mask & HOME_CACHE_MIXES) {
+        build_daily_mixes(recent, recent_count, mixes, &mix_count);
+    }
+
+    if (mask & (HOME_CACHE_PLAYLISTS | HOME_CACHE_TRACKS)) {
+        CatalogItem fresh_playlists[HOME_SUGGESTION_LIMIT];
+        CatalogItem fresh_tracks[HOME_SUGGESTION_LIMIT];
+        unsigned fresh_playlist_count = 0;
+        unsigned fresh_track_count = 0;
+
+        spotify_home_suggestions(spotify, recent, recent_count, skip_playlists, skip_count, mask,
+                                 fresh_playlists, &fresh_playlist_count, fresh_tracks, &fresh_track_count,
+                                 HOME_SUGGESTION_LIMIT);
+
+        if (mask & HOME_CACHE_PLAYLISTS) {
+            playlist_count = fresh_playlist_count;
+            memcpy(playlists, fresh_playlists, playlist_count * sizeof(*playlists));
+        }
+
+        if (mask & HOME_CACHE_TRACKS) {
+            track_count = fresh_track_count;
+            memcpy(tracks, fresh_tracks, track_count * sizeof(*tracks));
+        }
+    }
+
+    save_home_suggestions_cache(mixes, mix_count, playlists, playlist_count, tracks, track_count);
+
+    platform_lock();
+
+    if (job->session == app_state.view.session_revision) {
+        app_state.view.daily_mix_count = mix_count;
+        memcpy(app_state.view.daily_mixes, mixes, mix_count * sizeof(*mixes));
+        app_state.view.suggested_playlist_count = playlist_count;
+        memcpy(app_state.view.suggested_playlists, playlists, playlist_count * sizeof(*playlists));
+        app_state.view.recommended_track_count = track_count;
+        memcpy(app_state.view.recommended_tracks, tracks, track_count * sizeof(*tracks));
+
+        if (!strcmp(app_state.view.status, "Regenerating Home suggestions…")) {
+            app_state.view.status[0] = 0;
+        }
+    }
+
+    platform_unlock();
+    app_wake();
+}
+
 static void handle_home(Spotify *spotify, const Job *job) {
+    unsigned force_mask = job->value & HOME_CACHE_ALL;
+    CatalogItem cached_mixes[HOME_SUGGESTION_LIMIT];
+    CatalogItem cached_playlists[HOME_SUGGESTION_LIMIT];
+    CatalogItem cached_tracks[HOME_SUGGESTION_LIMIT];
+    unsigned cached_mix_count = 0;
+    unsigned cached_playlist_count = 0;
+    unsigned cached_track_count = 0;
+    bool cache_hit = !force_mask && load_home_suggestions_cache(cached_mixes, &cached_mix_count,
+                                                                cached_playlists, &cached_playlist_count,
+                                                                cached_tracks, &cached_track_count);
+
     BrowsePage page;
     bool ok = spotify_recent_albums(spotify, &page);
+
+    if (cache_hit && !cached_mix_count && ok && page.count > 0) {
+        build_daily_mixes(page.items, page.count, cached_mixes, &cached_mix_count);
+        save_home_suggestions_cache(cached_mixes, cached_mix_count, cached_playlists, cached_playlist_count,
+                                    cached_tracks, cached_track_count);
+    }
+
     platform_lock();
     bool need_profile = !app_state.view.profile.loaded;
 
@@ -1379,12 +1733,26 @@ static void handle_home(Spotify *spotify, const Job *job) {
         app_state.view.recent_permission_required = !ok && spotify->last_status == 403;
 
         if (ok) {
-            app_state.view.recent_count = page.count;
-            memcpy(app_state.view.recent, page.items, page.count * sizeof(*app_state.view.recent));
+            unsigned visible_recent = page.count < 8 ? page.count : 8;
+            app_state.view.recent_count = visible_recent;
+            memcpy(app_state.view.recent, page.items, visible_recent * sizeof(*app_state.view.recent));
+        }
+
+        if (cache_hit) {
+            app_state.view.daily_mix_count = cached_mix_count;
+            memcpy(app_state.view.daily_mixes, cached_mixes, cached_mix_count * sizeof(*cached_mixes));
+            app_state.view.suggested_playlist_count = cached_playlist_count;
+            memcpy(app_state.view.suggested_playlists, cached_playlists,
+                   cached_playlist_count * sizeof(*cached_playlists));
+            app_state.view.recommended_track_count = cached_track_count;
+            memcpy(app_state.view.recommended_tracks, cached_tracks,
+                   cached_track_count * sizeof(*cached_tracks));
         }
     }
 
     platform_unlock();
+
+    unsigned regen_mask = force_mask ? force_mask : (!cache_hit ? HOME_CACHE_ALL : 0);
 
     if (!need_profile) {
         platform_lock();
@@ -1396,6 +1764,11 @@ static void handle_home(Spotify *spotify, const Job *job) {
 
         platform_unlock();
         app_wake();
+
+        if (regen_mask && ok && page.count > 0) {
+            populate_home_suggestions(spotify, job, page.items, page.count, regen_mask);
+        }
+
         return;
     }
 
@@ -1411,6 +1784,11 @@ static void handle_home(Spotify *spotify, const Job *job) {
 
         platform_unlock();
         app_wake();
+
+        if (regen_mask && ok && page.count > 0) {
+            populate_home_suggestions(spotify, job, page.items, page.count, regen_mask);
+        }
+
         return;
     }
 
@@ -1439,6 +1817,10 @@ static void handle_home(Spotify *spotify, const Job *job) {
 
     platform_unlock();
     app_wake();
+
+    if (regen_mask && ok && page.count > 0) {
+        populate_home_suggestions(spotify, job, page.items, page.count, regen_mask);
+    }
 }
 
 static void handle_library(Spotify *spotify, const Job *job) {

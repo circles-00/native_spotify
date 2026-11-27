@@ -772,6 +772,191 @@ unsigned spotify_radio_tracks(Spotify *spotify, const CatalogItem *seed, Catalog
     return radio_fill_from_search(spotify, seed, tracks, found, limit);
 }
 
+static bool id_in_catalog(const CatalogItem *items, unsigned count, const char *id) {
+    for (unsigned i = 0; i < count; ++i) {
+        if (!strcmp(items[i].id, id)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool id_in_list(const char *const *ids, unsigned count, const char *id) {
+    for (unsigned i = 0; i < count; ++i) {
+        if (!strcmp(ids[i], id)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static unsigned random_index(unsigned bound) {
+    unsigned char bytes[4] = {0};
+
+    if (bound <= 1 || !platform_random(bytes, sizeof(bytes))) {
+        return 0;
+    }
+
+    uint32_t value = (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) | ((uint32_t)bytes[2] << 16) |
+                     ((uint32_t)bytes[3] << 24);
+    return value % bound;
+}
+
+void spotify_home_suggestions(Spotify *spotify, const CatalogItem *recent, unsigned recent_count,
+                              const char *const *skip_playlists, unsigned skip_count, unsigned mask,
+                              CatalogItem *playlists, unsigned *playlist_count, CatalogItem *tracks,
+                              unsigned *track_count, unsigned limit) {
+    *playlist_count = 0;
+    *track_count = 0;
+
+    if (!recent || !recent_count || !limit || !mask || !ensure_token(spotify)) {
+        return;
+    }
+
+    // Collect distinct artists across all parsed recently played tracks, then sample up to 3.
+    const char *artists[BROWSE_PAGE_SIZE] = {0};
+    unsigned artist_count = 0;
+
+    for (unsigned i = 0; i < recent_count && artist_count < BROWSE_PAGE_SIZE; ++i) {
+        if (!recent[i].detail[0]) {
+            continue;
+        }
+
+        bool seen = false;
+
+        for (unsigned j = 0; j < artist_count; ++j) {
+            if (!strcmp(artists[j], recent[i].detail)) {
+                seen = true;
+                break;
+            }
+        }
+
+        if (!seen) {
+            artists[artist_count++] = recent[i].detail;
+        }
+    }
+
+    for (unsigned i = artist_count; i > 1; --i) {
+        unsigned j = random_index(i);
+        const char *swap = artists[i - 1];
+        artists[i - 1] = artists[j];
+        artists[j] = swap;
+    }
+
+    if (artist_count > 3) {
+        artist_count = 3;
+    }
+
+    // 1. Suggested playlists based on recently played artists (1 small search per artist).
+    unsigned per_artist = artist_count > 1 ? (limit + artist_count - 1) / artist_count : limit;
+
+    for (unsigned a = 0; (mask & 2u) && a < artist_count && *playlist_count < limit; ++a) {
+        BrowseRequest search = {.kind = BROWSE_SEARCH, .filter = SEARCH_PLAYLISTS};
+
+        if (!search_append(search.query, artists[a], strlen(artists[a]))) {
+            continue;
+        }
+
+        BrowsePage page;
+
+        if (!spotify_browse(spotify, &search, &page)) {
+            continue;
+        }
+
+        unsigned added = 0;
+
+        for (unsigned i = 0; i < page.count && *playlist_count < limit && added < per_artist; ++i) {
+            const CatalogItem *item = &page.items[i];
+
+            if (!spotify_id_valid(item->id) || id_in_list(skip_playlists, skip_count, item->id) ||
+                id_in_catalog(playlists, *playlist_count, item->id)) {
+                continue;
+            }
+
+            playlists[(*playlist_count)++] = *item;
+            ++added;
+        }
+    }
+
+    if (!(mask & 4u)) {
+        return;
+    }
+
+    // 2. Recommended songs: try /v1/recommendations first (when available), then top up from artist search.
+    char seed_ids[5 * 24] = {0};
+    unsigned seed_count = 0;
+
+    for (unsigned i = 0; i < recent_count && seed_count < 5; ++i) {
+        if (!spotify_id_valid(recent[i].id)) {
+            continue;
+        }
+
+        if (seed_count > 0) {
+            strcat(seed_ids, ",");
+        }
+
+        strcat(seed_ids, recent[i].id);
+        ++seed_count;
+    }
+
+    if (seed_count > 0) {
+        char rec_url[512];
+        snprintf(rec_url, sizeof(rec_url), "https://api.spotify.com/v1/recommendations?seed_tracks=%s&limit=%u",
+                 seed_ids, limit + 4);
+        HttpResponse response = {0};
+
+        if (request(spotify, "GET", rec_url, NULL, false, &response)) {
+            yyjson_doc *doc = yyjson_read(response.body, strlen(response.body), 0);
+            yyjson_val *arr = yyjson_obj_get(yyjson_doc_get_root(doc), "tracks");
+
+            for (size_t i = 0; i < yyjson_arr_size(arr) && *track_count < limit; ++i) {
+                CatalogItem song;
+
+                if (catalog_item_parse(yyjson_arr_get(arr, i), ITEM_TRACK, &song) && song.playable &&
+                    !id_in_catalog(recent, recent_count, song.id) &&
+                    !id_in_catalog(tracks, *track_count, song.id)) {
+                    tracks[(*track_count)++] = song;
+                }
+            }
+
+            yyjson_doc_free(doc);
+        }
+
+        response_free(&response);
+    }
+
+    for (unsigned a = 0; a < artist_count && *track_count < limit; ++a) {
+        BrowseRequest search = {.kind = BROWSE_SEARCH, .filter = SEARCH_SONGS};
+
+        if (!search_append(search.query, artists[a], strlen(artists[a]))) {
+            continue;
+        }
+
+        BrowsePage page;
+
+        if (!spotify_browse(spotify, &search, &page)) {
+            continue;
+        }
+
+        unsigned added = 0;
+
+        for (unsigned i = 0; i < page.count && *track_count < limit && added < per_artist; ++i) {
+            const CatalogItem *item = &page.items[i];
+
+            if (!item->playable || !spotify_id_valid(item->id) ||
+                id_in_catalog(recent, recent_count, item->id) ||
+                id_in_catalog(tracks, *track_count, item->id)) {
+                continue;
+            }
+
+            tracks[(*track_count)++] = *item;
+            ++added;
+        }
+    }
+}
+
 bool spotify_song_radio(Spotify *spotify, const CatalogItem *seed, SongRadio *radio) {
     if (seed->kind != ITEM_TRACK || !spotify_id_valid(seed->id)) {
         snprintf(spotify->message, sizeof(spotify->message), "Song radio requires a Spotify track.");

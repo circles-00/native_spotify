@@ -1245,7 +1245,7 @@ void scene_draw(Scene *scene, const View *view, Canvas *canvas) {
         }
     }
 
-    for (unsigned i = 0; scene->home && i < 3 * HOME_SHELF_COLUMNS; ++i) {
+    for (unsigned i = 0; scene->home && i < HOME_SHELF_COUNT * HOME_SHELF_COLUMNS; ++i) {
         const CatalogItem *item = scene_home_item(view, i);
 
         if (item && scene->hits[HIT_CARD_FIRST + i].enabled) {

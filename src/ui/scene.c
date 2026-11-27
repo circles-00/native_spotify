@@ -248,7 +248,8 @@ HitId scene_hit(const Scene *scene, float x, float y) {
 
         bool content_control = (i >= HIT_ROW_FIRST && i <= HIT_ROW_LAST) ||
                                (i >= HIT_ROW_LIKE_FIRST && i <= HIT_POPULAR_LIKE_LAST) ||
-                               i == HIT_ARTIST_LIKES || i == HIT_SETTING_SEARCH_RADIO;
+                               i == HIT_ARTIST_LIKES || i == HIT_SETTING_SEARCH_RADIO ||
+                               (i >= HIT_SETTING_REGEN_MIXES && i <= HIT_SETTING_REGEN_ALL);
 
         if (!scene->home && scene->section != BROWSE_SEARCH && content_control &&
             (y < scene->content.y || y >= scene->content.y + scene->content.h || x < scene->content.x ||
@@ -962,6 +963,18 @@ const CatalogItem *scene_home_item(const View *view, unsigned index) {
         return slot < view->recent_count ? &view->recent[slot] : NULL;
     }
 
+    if (shelf == 2) {
+        return slot < view->daily_mix_count ? &view->daily_mixes[slot] : NULL;
+    }
+
+    if (shelf == 3) {
+        return slot < view->suggested_playlist_count ? &view->suggested_playlists[slot] : NULL;
+    }
+
+    if (shelf == 4) {
+        return slot < view->recommended_track_count ? &view->recommended_tracks[slot] : NULL;
+    }
+
     if (shelf == 0) {
         const BrowsePage *playlists = &view->library[2];
         unsigned featured = 0;
@@ -980,7 +993,7 @@ const CatalogItem *scene_home_item(const View *view, unsigned index) {
         return !featured && slot < playlists->count ? &playlists->items[slot] : NULL;
     }
 
-    if (shelf == 2) {
+    if (shelf == 5) {
         return slot < view->library[1].count ? &view->library[1].items[slot] : NULL;
     }
 

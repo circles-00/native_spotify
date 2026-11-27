@@ -7,6 +7,7 @@
 
 #define ROW_SLOTS (HIT_ROW_LAST - HIT_ROW_FIRST + 1)
 #define HOME_SHELF_COLUMNS 7
+#define HOME_SHELF_COUNT 6
 #define LIBRARY_ROW_HEIGHT 53.33f
 #define QUEUE_ROW_HEIGHT 42.67f
 #define QUEUE_LIST_TOP 198.0f
@@ -109,7 +110,7 @@ typedef enum {
     HIT_HOME_ALBUMS,
     HIT_HOME_PLAYLISTS,
     HIT_CARD_FIRST,
-    HIT_CARD_LAST = HIT_CARD_FIRST + 3 * HOME_SHELF_COLUMNS - 1,
+    HIT_CARD_LAST = HIT_CARD_FIRST + HOME_SHELF_COUNT * HOME_SHELF_COLUMNS - 1,
     HIT_LIBRARY_FIRST,
     HIT_LIBRARY_LAST = HIT_LIBRARY_FIRST + 23,
     HIT_ROW_FIRST,
@@ -134,6 +135,10 @@ typedef enum {
     HIT_LYRIC_FIRST,
     HIT_LYRIC_LAST = HIT_LYRIC_FIRST + LYRICS_LINE_LIMIT - 1,
     HIT_SETTING_SEARCH_RADIO,
+    HIT_SETTING_REGEN_MIXES,
+    HIT_SETTING_REGEN_PLAYLISTS,
+    HIT_SETTING_REGEN_TRACKS,
+    HIT_SETTING_REGEN_ALL,
     HIT_LIST_FILTER,
     HIT_LIST_FILTER_CLEAR,
     HIT_SORT_INDEX,
@@ -256,7 +261,7 @@ typedef struct {
     unsigned popular_selected;
     bool popular_expanded;
     float home_extent;
-    float home_headings[3];
+    float home_headings[HOME_SHELF_COUNT];
     uint64_t search_due;
     char query[SEARCH_CAPACITY];
     char list_filter[SEARCH_CAPACITY];

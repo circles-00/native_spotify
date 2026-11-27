@@ -51,6 +51,10 @@ typedef struct {
 } SongRadio;
 
 unsigned spotify_radio_tracks(Spotify *spotify, const CatalogItem *seed, CatalogItem *tracks, unsigned limit);
+void spotify_home_suggestions(Spotify *spotify, const CatalogItem *recent, unsigned recent_count,
+                              const char *const *skip_playlists, unsigned skip_count, unsigned mask,
+                              CatalogItem *playlists, unsigned *playlist_count, CatalogItem *tracks,
+                              unsigned *track_count, unsigned limit);
 bool spotify_song_radio(Spotify *spotify, const CatalogItem *seed, SongRadio *radio);
 bool spotify_play_tracks(Spotify *spotify, const Playback *target, const char ids[][23], unsigned count);
 bool spotify_play_restored(Spotify *spotify, const Playback *target, const Playback *restored,

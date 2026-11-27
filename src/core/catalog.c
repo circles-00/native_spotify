@@ -141,25 +141,25 @@ bool recent_albums_parse(const char *json, BrowsePage *page) {
 
     yyjson_val *items = yyjson_obj_get(yyjson_doc_get_root(doc), "items");
     bool valid = yyjson_is_arr(items) && yyjson_arr_size(items) <= 50;
-    BrowsePage parsed = {.limit = 8};
+    BrowsePage parsed = {.limit = BROWSE_PAGE_SIZE};
 
     if (valid) {
-        for (size_t i = 0; i < yyjson_arr_size(items) && parsed.count < 8; ++i) {
+        for (size_t i = 0; i < yyjson_arr_size(items) && parsed.count < BROWSE_PAGE_SIZE; ++i) {
             yyjson_val *track = yyjson_obj_get(yyjson_arr_get(items, i), "track");
-            CatalogItem album;
+            CatalogItem song;
 
-            if (!catalog_item_parse(yyjson_obj_get(track, "album"), ITEM_ALBUM, &album)) {
+            if (!catalog_item_parse(track, ITEM_TRACK, &song)) {
                 continue;
             }
 
             bool duplicate = false;
 
             for (unsigned j = 0; j < parsed.count; ++j) {
-                duplicate = duplicate || !strcmp(parsed.items[j].id, album.id);
+                duplicate = duplicate || !strcmp(parsed.items[j].id, song.id);
             }
 
             if (!duplicate) {
-                parsed.items[parsed.count++] = album;
+                parsed.items[parsed.count++] = song;
             }
         }
 

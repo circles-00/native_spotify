@@ -44,11 +44,19 @@ void home_scene_layout(Scene *scene, const View *view) {
     if (card > 149) {
         card = 149;
     }
-    float headings[3];
+    float headings[HOME_SHELF_COUNT];
 
-    for (unsigned shelf = 0; shelf < 3; ++shelf) {
+    for (unsigned shelf = 0; shelf < HOME_SHELF_COUNT; ++shelf) {
+        bool optional = shelf >= 2 && shelf <= 4;
+        bool has_items = scene_home_item(view, shelf * HOME_SHELF_COLUMNS) != NULL;
+
+        if (optional && !has_items) {
+            headings[shelf] = -10000.0f;
+            continue;
+        }
+
         headings[shelf] = shelf_y;
-        shelf_y += scene_home_item(view, shelf * HOME_SHELF_COLUMNS) ? card + 103 : 60;
+        shelf_y += has_items ? card + 103 : 60;
     }
 
     scene->home_extent = shelf_y;
@@ -65,10 +73,15 @@ void home_scene_layout(Scene *scene, const View *view) {
               (Rect){x + i % columns * (tile + 9), y + 58 + i / columns * 59, tile, 53});
     }
 
-    const HitId headings_ids[] = {scene_home_made_for_you(view) ? HIT_NONE : HIT_HOME_PLAYLISTS, HIT_NONE,
-                                  HIT_HOME_ALBUMS};
+    const HitId headings_ids[HOME_SHELF_COUNT] = {scene_home_made_for_you(view) ? HIT_NONE : HIT_HOME_PLAYLISTS,
+                                                  HIT_NONE, HIT_NONE, HIT_NONE, HIT_NONE, HIT_HOME_ALBUMS};
 
-    for (unsigned shelf = 0; shelf < 3; ++shelf) {
+    for (unsigned shelf = 0; shelf < HOME_SHELF_COUNT; ++shelf) {
+        if (headings[shelf] < 0) {
+            scene->home_headings[shelf] = -10000.0f;
+            continue;
+        }
+
         scene->home_headings[shelf] = y + headings[shelf];
 
         if (headings_ids[shelf] != HIT_NONE) {
@@ -138,13 +151,20 @@ void home_scene_draw(Scene *scene, const View *view, Canvas *canvas) {
               (Rect){rect.x + 64, rect.y, rect.w - 75, rect.h}, 13, TEXT_BOLD, DARK_TEXT);
     }
 
-    const char *titles[] = {scene_home_made_for_you(view) ? "Made for you" : "Your playlists",
-                            "Recently played", "Saved albums"};
-    static const char *empty[] = {"Your playlists will appear here.",
-                                  "Albums you listen to will appear here.", "Save albums to find them here."};
+    const char *titles[HOME_SHELF_COUNT] = {scene_home_made_for_you(view) ? "Made for you" : "Your playlists",
+                                            "Recently played", "Daily mixes", "Suggested playlists",
+                                            "Recommended for you", "Saved albums"};
+    static const char *empty[HOME_SHELF_COUNT] = {"Your playlists will appear here.",
+                                                  "Songs you listen to will appear here.", "", "", "",
+                                                  "Save albums to find them here."};
 
-    for (unsigned shelf = 0; shelf < 3; ++shelf) {
+    for (unsigned shelf = 0; shelf < HOME_SHELF_COUNT; ++shelf) {
         float top = scene->home_headings[shelf];
+
+        if (top <= -9000.0f) {
+            continue;
+        }
+
         label(canvas, titles[shelf], (Rect){x, top, width - 82, 24}, 16, TEXT_BOLD, DARK_TEXT);
 
         if (!scene_home_item(view, shelf * HOME_SHELF_COLUMNS)) {
@@ -163,7 +183,7 @@ void home_scene_draw(Scene *scene, const View *view, Canvas *canvas) {
         }
     }
 
-    for (unsigned i = 0; i < 3 * HOME_SHELF_COLUMNS; ++i) {
+    for (unsigned i = 0; i < HOME_SHELF_COUNT * HOME_SHELF_COLUMNS; ++i) {
         HitId id = (HitId)(HIT_CARD_FIRST + i);
         const CatalogItem *item = scene_home_item(view, i);
 
@@ -171,11 +191,12 @@ void home_scene_draw(Scene *scene, const View *view, Canvas *canvas) {
             continue;
         }
 
+        unsigned shelf = i / HOME_SHELF_COLUMNS;
         Rect rect = scene->hits[id].rect;
         canvas->box(canvas->context, rect, 6, color_mix(DARK_BODY, DARK_TILE, scene->hover[id]));
         float art = rect.w - 18;
         cover(canvas, item, (Rect){rect.x + 10, rect.y + 10, art, art},
-              i < HOME_SHELF_COLUMNS ? ICON_PLAYLIST : ICON_ALBUM);
+              shelf == 0 || shelf == 2 || shelf == 3 ? ICON_PLAYLIST : ICON_ALBUM);
         label(canvas, item->title, (Rect){rect.x + 10, rect.y + art + 18, art, 17}, 12, TEXT_BOLD, DARK_TEXT);
         canvas->text(canvas->context, item->detail, (Rect){rect.x + 10, rect.y + art + 35, art, 30}, 11, 0,
                      DARK_MUTED);

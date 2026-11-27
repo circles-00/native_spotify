@@ -49,6 +49,11 @@ typedef enum {
 #define LIST_WINDOW 64
 #define LIST_LIMIT 1500
 #define SEARCH_HISTORY_LIMIT 20
+#define HOME_SUGGESTION_LIMIT 5
+#define HOME_CACHE_MIXES 1u
+#define HOME_CACHE_PLAYLISTS 2u
+#define HOME_CACHE_TRACKS 4u
+#define HOME_CACHE_ALL (HOME_CACHE_MIXES | HOME_CACHE_PLAYLISTS | HOME_CACHE_TRACKS)
 
 typedef enum { LIST_SORT_NONE, LIST_SORT_TITLE, LIST_SORT_ALBUM, LIST_SORT_DURATION } ListSort;
 
@@ -116,6 +121,12 @@ typedef struct {
     unsigned recent_count;
     bool recent_loaded;
     bool recent_permission_required;
+    CatalogItem daily_mixes[HOME_SUGGESTION_LIMIT];
+    unsigned daily_mix_count;
+    CatalogItem suggested_playlists[HOME_SUGGESTION_LIMIT];
+    unsigned suggested_playlist_count;
+    CatalogItem recommended_tracks[HOME_SUGGESTION_LIMIT];
+    unsigned recommended_track_count;
     CatalogItem search_history[SEARCH_HISTORY_LIMIT];
     unsigned search_history_count;
     unsigned artist_liked_count;
@@ -146,6 +157,7 @@ bool app_browse_artist_likes(const CatalogItem *artist);
 void app_search_history_add(const CatalogItem *item);
 void app_search_history_remove(const char *id);
 bool app_play_search_history(const CatalogItem *item);
+bool app_play_track(const CatalogItem *item);
 bool app_filter_discography(const char *group);
 bool app_open_collection_link(void);
 bool app_open_item_link(const CatalogItem *item);
@@ -188,6 +200,7 @@ void app_engine_dashboard(void);
 void app_engine_forget(void);
 void app_engine_stop(void);
 bool app_set_search_radio(bool enabled);
+bool app_regenerate_home_suggestions(unsigned mask);
 bool app_set_client_id(const char *client_id);
 void app_open_developer_dashboard(void);
 void app_open_setup_guide(void);

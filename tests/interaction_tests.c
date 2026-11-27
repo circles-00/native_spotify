@@ -465,10 +465,16 @@ static void test_login_screen(void) {
 
     view.library[1].count = 1;
     view.library[2].count = 2;
+    view.daily_mix_count = 1;
+    view.suggested_playlist_count = 1;
+    view.recommended_track_count = 1;
     CHECK(scene_home_item(&view, 0) == &view.library[2].items[0]);
     CHECK(scene_home_item(&view, 1) == &view.library[2].items[1]);
     CHECK(scene_home_item(&view, HOME_SHELF_COLUMNS) == NULL);
-    CHECK(scene_home_item(&view, 2 * HOME_SHELF_COLUMNS) == &view.library[1].items[0]);
+    CHECK(scene_home_item(&view, 2 * HOME_SHELF_COLUMNS) == &view.daily_mixes[0]);
+    CHECK(scene_home_item(&view, 3 * HOME_SHELF_COLUMNS) == &view.suggested_playlists[0]);
+    CHECK(scene_home_item(&view, 4 * HOME_SHELF_COLUMNS) == &view.recommended_tracks[0]);
+    CHECK(scene_home_item(&view, 5 * HOME_SHELF_COLUMNS) == &view.library[1].items[0]);
     CHECK(scene_home_quick_item(&view, 0) == NULL);
     CHECK(scene_home_quick_item(&view, 1) == &view.library[2].items[0]);
 }
@@ -1173,7 +1179,7 @@ static void test_home_scrolling_and_panels(void) {
     }
 
     scene_layout(&scene, &view, 960, 640);
-    HitId bottom_id = HIT_CARD_FIRST + 2 * HOME_SHELF_COLUMNS;
+    HitId bottom_id = HIT_CARD_FIRST + 5 * HOME_SHELF_COLUMNS;
     Rect bottom = scene.hits[bottom_id].rect;
     CHECK(bottom.w > 100 && bottom.y + bottom.h <= scene.content.y + scene.content.h - 16);
     CHECK(scene_hit(&scene, bottom.x + 16, scene.player.y + 4) != bottom_id);

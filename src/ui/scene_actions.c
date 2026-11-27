@@ -171,9 +171,13 @@ static void open_song_radio(Scene *scene, const CatalogItem *song) {
     scene->last_click = HIT_NONE;
     scene->retain_content = false;
     scene->entrance = 1;
-    copy_utf8(scene->collection, sizeof(scene->collection) - sizeof(" Radio") + 1,
-              song->title[0] ? song->title : "Song");
-    strcat(scene->collection, " Radio");
+    if (!strncmp(song->title, "Daily Mix ", 10)) {
+        copy_utf8(scene->collection, sizeof(scene->collection), song->title);
+    } else {
+        copy_utf8(scene->collection, sizeof(scene->collection) - sizeof(" Radio") + 1,
+                  song->title[0] ? song->title : "Song");
+        strcat(scene->collection, " Radio");
+    }
     copy_utf8(scene->collection_artwork, sizeof(scene->collection_artwork), song->artwork);
 }
 
@@ -437,10 +441,17 @@ void scene_activate(Scene *scene, const View *view, HitId id) {
     }
 
     if (id >= HIT_CARD_FIRST && id <= HIT_CARD_LAST) {
-        const CatalogItem *item = scene_home_item(view, (unsigned)(id - HIT_CARD_FIRST));
+        unsigned card_index = (unsigned)(id - HIT_CARD_FIRST);
+        const CatalogItem *item = scene_home_item(view, card_index);
 
         if (item) {
-            scene_open_collection(scene, item);
+            if (card_index / HOME_SHELF_COLUMNS == 2) {
+                open_song_radio(scene, item);
+            } else if (item->kind == ITEM_TRACK) {
+                app_play_track(item);
+            } else {
+                scene_open_collection(scene, item);
+            }
         }
 
         return;
@@ -450,7 +461,11 @@ void scene_activate(Scene *scene, const View *view, HitId id) {
         unsigned index = (unsigned)(id - HIT_PANEL_RECENT_FIRST);
 
         if (index < view->recent_count) {
-            scene_open_collection(scene, &view->recent[index]);
+            if (view->recent[index].kind == ITEM_TRACK) {
+                app_play_track(&view->recent[index]);
+            } else {
+                scene_open_collection(scene, &view->recent[index]);
+            }
         }
 
         return;
@@ -810,6 +825,18 @@ void scene_activate(Scene *scene, const View *view, HitId id) {
         return;
     case HIT_SETTING_SEARCH_RADIO:
         app_set_search_radio(!view->settings.search_radio);
+        return;
+    case HIT_SETTING_REGEN_MIXES:
+        app_regenerate_home_suggestions(HOME_CACHE_MIXES);
+        return;
+    case HIT_SETTING_REGEN_PLAYLISTS:
+        app_regenerate_home_suggestions(HOME_CACHE_PLAYLISTS);
+        return;
+    case HIT_SETTING_REGEN_TRACKS:
+        app_regenerate_home_suggestions(HOME_CACHE_TRACKS);
+        return;
+    case HIT_SETTING_REGEN_ALL:
+        app_regenerate_home_suggestions(HOME_CACHE_ALL);
         return;
     case HIT_LINK:
         app_open_link();

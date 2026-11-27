@@ -451,13 +451,13 @@ static void test_collection_browsing_and_history(void) {
     CHECK(!item_browse_request(&artist, &request));
 
     CHECK(recent_albums_parse(
-        "{\"items\":[{\"track\":{\"album\":{\"type\":\"album\",\"id\":\"" ID "\",\"name\":\"First\"}}},"
-        "{\"track\":{\"album\":{\"type\":\"album\",\"id\":\"" ID "\",\"name\":\"First\"}}},"
-        "{\"track\":null},{\"track\":{\"album\":{\"type\":\"album\",\"id\":\"abcdefghijkl0123456789\","
-        "\"name\":\"Second\"}}}]}",
+        "{\"items\":[{\"track\":{\"type\":\"track\",\"id\":\"" ID "\",\"name\":\"First\"}},"
+        "{\"track\":{\"type\":\"track\",\"id\":\"" ID "\",\"name\":\"First\"}},"
+        "{\"track\":null},{\"track\":{\"type\":\"track\",\"id\":\"abcdefghijkl0123456789\","
+        "\"name\":\"Second\"}}]}",
         &page));
     CHECK(page.count == 2 && !strcmp(page.items[0].title, "First") && !strcmp(page.items[1].title, "Second"));
-    CHECK(page.items[0].kind == ITEM_ALBUM && !page.has_next);
+    CHECK(page.items[0].kind == ITEM_TRACK && !page.has_next);
     CHECK(recent_albums_parse("{\"items\":[]}", &page) && !page.count);
     CHECK(!recent_albums_parse("{\"items\":null}", &page));
     CHECK(!recent_albums_parse("not json", &page));

@@ -813,6 +813,12 @@ void app_reset_session(void) {
     app_state.view.recent_count = 0;
     app_state.view.recent_loaded = false;
     app_state.view.recent_permission_required = false;
+    memset(app_state.view.daily_mixes, 0, sizeof(app_state.view.daily_mixes));
+    app_state.view.daily_mix_count = 0;
+    memset(app_state.view.suggested_playlists, 0, sizeof(app_state.view.suggested_playlists));
+    app_state.view.suggested_playlist_count = 0;
+    memset(app_state.view.recommended_tracks, 0, sizeof(app_state.view.recommended_tracks));
+    app_state.view.recommended_track_count = 0;
     free(app_state.likes);
     app_state.likes = NULL;
     app_state.likes_capacity = 0;
@@ -1139,6 +1145,11 @@ void app_action(Action action) {
 
         if (action == ACTION_DISCONNECT) {
             clear_saved_playback();
+            char cache_path[PLATFORM_PATH_CAPACITY];
+
+            if (data_file_path("home_suggestions.json", cache_path)) {
+                platform_write_file(cache_path, "{}");
+            }
         }
 
         app_reset_session();
@@ -1570,6 +1581,10 @@ bool app_play_search_history(const CatalogItem *item) {
     return item_can_play(item) && play_item_in_context(item, false);
 }
 
+bool app_play_track(const CatalogItem *item) {
+    return item_can_play(item) && play_item_in_context(item, false);
+}
+
 bool app_open_item(const CatalogItem *item) {
     Job job = {.action = ACTION_BROWSE, .item = *item};
 
@@ -1904,6 +1919,55 @@ void app_open_developer_dashboard(void) {
 
 void app_open_setup_guide(void) {
     platform_open_url("https://developer.spotify.com/documentation/web-api/concepts/apps");
+}
+
+bool app_regenerate_home_suggestions(unsigned mask) {
+    mask &= HOME_CACHE_ALL;
+
+    if (!mask) {
+        return false;
+    }
+
+    if (mask == HOME_CACHE_ALL) {
+        char cache_path[PLATFORM_PATH_CAPACITY];
+
+        if (data_file_path("home_suggestions.json", cache_path)) {
+            platform_write_file(cache_path, "{}");
+        }
+    }
+
+    platform_lock();
+    bool authed = app_state.view.authenticated;
+    unsigned session = app_state.view.session_revision;
+
+    if (authed) {
+        if (mask & HOME_CACHE_MIXES) {
+            memset(app_state.view.daily_mixes, 0, sizeof(app_state.view.daily_mixes));
+            app_state.view.daily_mix_count = 0;
+        }
+
+        if (mask & HOME_CACHE_PLAYLISTS) {
+            memset(app_state.view.suggested_playlists, 0, sizeof(app_state.view.suggested_playlists));
+            app_state.view.suggested_playlist_count = 0;
+        }
+
+        if (mask & HOME_CACHE_TRACKS) {
+            memset(app_state.view.recommended_tracks, 0, sizeof(app_state.view.recommended_tracks));
+            app_state.view.recommended_track_count = 0;
+        }
+
+        snprintf(app_state.view.status, sizeof(app_state.view.status), "Regenerating Home suggestions…");
+    }
+
+    platform_unlock();
+
+    if (!authed) {
+        return false;
+    }
+
+    app_wake();
+    app_submit((Job){.action = ACTION_HOME, .session = session, .value = mask});
+    return true;
 }
 
 bool app_set_client_id(const char *client_id) {
