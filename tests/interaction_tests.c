@@ -27,6 +27,14 @@
 
 static unsigned checks;
 
+#if defined(__GNUC__) || defined(__clang__)
+#define TEST_NOINLINE __attribute__((noinline))
+#elif defined(_MSC_VER)
+#define TEST_NOINLINE __declspec(noinline)
+#else
+#define TEST_NOINLINE
+#endif
+
 #define CHECK(expression)                                                                                    \
     do {                                                                                                     \
         ++checks;                                                                                            \
@@ -73,7 +81,7 @@ static void fixture_list(View *view, const BrowseRequest *request, const BrowseP
 }
 #endif
 
-static void test_no_session(void) {
+static TEST_NOINLINE void test_no_session(void) {
     View *snapshot = malloc(sizeof(*snapshot));
     CHECK(snapshot != NULL);
     app_snapshot_into(snapshot);
@@ -114,7 +122,7 @@ static void test_no_session(void) {
     free(snapshot);
 }
 
-static void test_layout(void) {
+static TEST_NOINLINE void test_layout(void) {
     Scene scene;
     scene_init(&scene);
     View view = app_snapshot();
@@ -164,7 +172,7 @@ static void test_layout(void) {
     CHECK(scene.content.w > 600);
 }
 
-static void test_input_and_activation(void) {
+static TEST_NOINLINE void test_input_and_activation(void) {
     Scene scene;
     scene_init(&scene);
     View view = app_snapshot();
@@ -234,7 +242,7 @@ static void test_input_and_activation(void) {
     CHECK(!scene.query[0] && scene.home && scene.panel == PANEL_NONE);
 }
 
-static void test_animation(void) {
+static TEST_NOINLINE void test_animation(void) {
     Scene scene;
     scene_init(&scene);
     scene_hover(&scene, HIT_HOME, 1000);
@@ -272,7 +280,7 @@ static void test_animation(void) {
     CHECK(scene.entrance == 0 && !scene.animating);
 }
 
-static void test_content_geometry(void) {
+static TEST_NOINLINE void test_content_geometry(void) {
     Scene scene;
     scene_init(&scene);
     scene.home = false;
@@ -404,7 +412,7 @@ static void test_content_geometry(void) {
     CHECK(color_mix(0, 0xffffff, .5f) == 0x7f7f7f);
 }
 
-static void test_player_drag(void) {
+static TEST_NOINLINE void test_player_drag(void) {
     Scene scene;
     scene_init(&scene);
     View view = app_snapshot();
@@ -426,7 +434,7 @@ static void test_player_drag(void) {
     CHECK(!scene.hits[HIT_SEEK].enabled && !scene.hits[HIT_VOLUME].enabled);
 }
 
-static void test_login_screen(void) {
+static TEST_NOINLINE void test_login_screen(void) {
     Scene scene;
     scene_init(&scene);
     View view = app_snapshot();
@@ -479,7 +487,7 @@ static void test_login_screen(void) {
     CHECK(scene_home_quick_item(&view, 1) == &view.library[2].items[0]);
 }
 
-static void test_search_and_library_geometry(void) {
+static TEST_NOINLINE void test_search_and_library_geometry(void) {
     Scene scene;
     scene_init(&scene);
     scene.home = false;
@@ -538,7 +546,7 @@ static void test_search_and_library_geometry(void) {
     app_library_viewport(0);
 }
 
-static void test_collection_clicks_do_not_play(void) {
+static TEST_NOINLINE void test_collection_clicks_do_not_play(void) {
     View *view = malloc(sizeof(*view));
     CHECK(view != NULL);
 
@@ -623,7 +631,7 @@ static void test_collection_clicks_do_not_play(void) {
     free(view);
 }
 
-static void test_song_radio_and_art_play(void) {
+static TEST_NOINLINE void test_song_radio_and_art_play(void) {
     View view = app_snapshot();
     unsigned playback_revision = view.playback_revision;
     unsigned setup_revision = view.setup_revision;
@@ -725,7 +733,7 @@ static void test_song_radio_and_art_play(void) {
     platform_unlock();
 }
 
-static void test_like_status_before_scan(void) {
+static TEST_NOINLINE void test_like_status_before_scan(void) {
     CatalogItem song = {.kind = ITEM_TRACK, .id = "0000000000000000000021", .title = "Liked", .playable = true};
     Worker *worker = &app_state.workers[LANE_STATE];
 
@@ -782,7 +790,7 @@ static void test_like_status_before_scan(void) {
     app_reset_session();
 }
 
-static void test_playlist_sort_filter_and_play(void) {
+static TEST_NOINLINE void test_playlist_sort_filter_and_play(void) {
     BrowseRequest request = {.kind = BROWSE_PLAYLIST_TRACKS, .id = "0000000000000000000031", .title = "Mix"};
     BrowsePage page = {.count = 3, .limit = 3, .total = 3};
     const char *titles[] = {"Charlie", "alpha", "Bravo"};
@@ -856,7 +864,7 @@ static void test_playlist_sort_filter_and_play(void) {
     app_reset_session();
 }
 
-static void test_devices_panel_and_badge(void) {
+static TEST_NOINLINE void test_devices_panel_and_badge(void) {
     Worker *worker = &app_state.workers[LANE_PLAYER];
     platform_lock();
     app_state.view.authenticated = true;
@@ -938,7 +946,7 @@ static CatalogItem queue_song(unsigned number) {
     return song;
 }
 
-static void test_app_managed_queue(void) {
+static TEST_NOINLINE void test_app_managed_queue(void) {
     Spotify offline = {0};
     View *view = malloc(sizeof(*view));
     CHECK(view != NULL);
@@ -1062,7 +1070,7 @@ static void test_app_managed_queue(void) {
     app_reset_session();
 }
 
-static void test_playlist_queue_and_cache(void) {
+static TEST_NOINLINE void test_playlist_queue_and_cache(void) {
     BrowseRequest request = {.kind = BROWSE_PLAYLIST_TRACKS, .id = "0000000000000000000060", .title = "Long"};
     BrowsePage *page = calloc(1, sizeof(*page));
     CHECK(page != NULL);
@@ -1161,7 +1169,7 @@ static void test_playlist_queue_and_cache(void) {
     app_reset_session();
 }
 
-static void test_home_scrolling_and_panels(void) {
+static TEST_NOINLINE void test_home_scrolling_and_panels(void) {
     Scene scene;
     scene_init(&scene);
     View view = app_snapshot();
@@ -1400,7 +1408,7 @@ static void check_text_center(const uint32_t *pixels, unsigned stride, Rect rect
     CHECK(abs((int)(top + bottom + 1) - (int)(rect.y * 2 + rect.h)) <= 2);
 }
 
-static void test_label_alignment(void) {
+static TEST_NOINLINE void test_label_alignment(void) {
     static const float scales[] = {1, 1.25f, 1.5f, 2};
     static const unsigned heights[] = {24, 32, 40, 48, 56, 64};
     static const char *labels[] = {"Play",  "Music",       "Log out", "Continue with Spotify",
@@ -1478,7 +1486,7 @@ static void test_label_alignment(void) {
 }
 
 #ifndef _WIN32
-static void test_linux_rounded_artwork(void) {
+static TEST_NOINLINE void test_linux_rounded_artwork(void) {
     const float scales[] = {1, 1.25f, 1.5f, 2};
     uint32_t white[] = {0xffffff, 0xffffff, 0xffffff, 0xffffff};
     const Image source = {.pixels = white, .width = 2, .height = 2};
@@ -1525,7 +1533,7 @@ static void test_linux_rounded_artwork(void) {
     linux_canvas_destroy(&backend);
 }
 
-static void test_navigation_rendering(void) {
+static TEST_NOINLINE void test_navigation_rendering(void) {
     LinuxCanvas backend = {0};
     Scene scene;
     scene_init(&scene);
@@ -1634,7 +1642,7 @@ static void test_navigation_rendering(void) {
     cairo_surface_destroy(surface);
 }
 
-static void test_rendering(void) {
+static TEST_NOINLINE void test_rendering(void) {
     linux_load_font();
     LinuxCanvas backend = {0};
     Scene scene;
@@ -1934,7 +1942,7 @@ static void test_rendering(void) {
 #endif
 
 #ifdef _WIN32
-static void test_windows_frame_pixels(void) {
+static TEST_NOINLINE void test_windows_frame_pixels(void) {
     WindowsBuffer frame = {0};
     WindowsCanvas backend = {0};
     Canvas canvas;
@@ -1968,7 +1976,7 @@ static void test_windows_frame_pixels(void) {
     windows_buffer_destroy(&frame);
 }
 
-static void test_native_text_compositor(void) {
+static TEST_NOINLINE void test_native_text_compositor(void) {
     WindowsCanvas backends[2] = {0};
     Canvas canvases[2];
     HDC paints[2];
@@ -2062,7 +2070,7 @@ static void test_native_text_compositor(void) {
 }
 #endif
 
-static void test_controller_and_raster(void) {
+static TEST_NOINLINE void test_controller_and_raster(void) {
     UiController controller;
     ui_controller_init(&controller, 1000);
     CHECK(ui_controller_cursor(&controller) == UI_CURSOR_ARROW);
@@ -2173,7 +2181,7 @@ static void test_controller_and_raster(void) {
     app_reset_session();
 }
 
-static void test_loading_placeholders(void) {
+static TEST_NOINLINE void test_loading_placeholders(void) {
     const BrowseKind kinds[] = {BROWSE_SAVED_TRACKS, BROWSE_SAVED_ALBUMS, BROWSE_ALBUM_TRACKS,
                                 BROWSE_ARTIST_ALBUMS, BROWSE_PROFILE_PLAYLISTS, BROWSE_SEARCH};
 
@@ -2206,7 +2214,7 @@ static void test_loading_placeholders(void) {
     }
 }
 
-static void test_play_pause_burst(void) {
+static TEST_NOINLINE void test_play_pause_burst(void) {
     Worker *worker = &app_state.workers[LANE_PLAYER];
     platform_lock();
     worker->running = true; // Keep the real submission queue without starting network I/O.
@@ -2239,7 +2247,7 @@ static void test_play_pause_burst(void) {
     app_reset_session();
 }
 
-static void test_space_toggles_playback(void) {
+static TEST_NOINLINE void test_space_toggles_playback(void) {
     Worker *worker = &app_state.workers[LANE_PLAYER];
     platform_lock();
     worker->running = true;
@@ -2275,7 +2283,7 @@ static void test_space_toggles_playback(void) {
     app_reset_session();
 }
 
-static void test_sidebar_resize_and_collapse(void) {
+static TEST_NOINLINE void test_sidebar_resize_and_collapse(void) {
     Scene scene;
     scene_init(&scene);
     View view = {.authenticated = true};
@@ -2364,7 +2372,7 @@ static void test_sidebar_resize_and_collapse(void) {
     app_set_layout(0, false, 0);
 }
 
-static void test_recent_search_popup(void) {
+static TEST_NOINLINE void test_recent_search_popup(void) {
     Scene scene;
     scene_init(&scene);
     View view = {.authenticated = true, .search_history_count = SEARCH_HISTORY_LIMIT};
@@ -2411,7 +2419,7 @@ static void test_recent_search_popup(void) {
     app_reset_session();
 }
 
-static void test_wheel_settings(void) {
+static TEST_NOINLINE void test_wheel_settings(void) {
     Scene scene;
     scene_init(&scene);
     View view = {0};
@@ -2429,7 +2437,7 @@ static void test_wheel_settings(void) {
     CHECK(scene.main_scroll.target == 1264);
 }
 
-static void test_artist_likes(void) {
+static TEST_NOINLINE void test_artist_likes(void) {
     CatalogItem artist = {.kind = ITEM_ARTIST, .id = "0000000000000000000001", .title = "Artist"};
     CatalogItem likes[] = {
         {.kind = ITEM_TRACK, .id = "0000000000000000000011", .artist_id = "0000000000000000000001"},
@@ -2474,7 +2482,7 @@ static void test_artist_likes(void) {
     app_reset_session();
 }
 
-static void test_optimistic_likes(void) {
+static TEST_NOINLINE void test_optimistic_likes(void) {
     const CatalogItem song = {.kind = ITEM_TRACK, .id = "0000000000000000000011"};
     Worker *worker = &app_state.workers[LANE_CONTENT];
     platform_lock();
@@ -2520,7 +2528,7 @@ static void test_optimistic_likes(void) {
     app_reset_session();
 }
 
-static void test_lyrics_parser(void) {
+static TEST_NOINLINE void test_lyrics_parser(void) {
     Playback track = {.uri = "spotify:track:fixture", .title = "Song", .artist = "Artist", .duration_ms = 30000};
     Lyrics lyrics = {0};
     const char *exact = "{\"syncedLyrics\":\"[ar:Artist]\\n[00:08.123][00:02.5]  Héllo\\r\\n"
@@ -2545,7 +2553,7 @@ static void test_lyrics_parser(void) {
     CHECK(lyrics.state == LYRICS_SYNCED && lyrics.count == 1 && lyrics.lines[0].time_ms == 3250);
 }
 
-static void test_lyrics_scene(Canvas *canvas) {
+static TEST_NOINLINE void test_lyrics_scene(Canvas *canvas) {
     Scene scene;
     scene_init(&scene);
     View view = app_snapshot();
@@ -2608,7 +2616,7 @@ static void test_lyrics_scene(Canvas *canvas) {
     app_reset_session();
 }
 
-static void test_player_like_and_header_layout(void) {
+static TEST_NOINLINE void test_player_like_and_header_layout(void) {
     Scene scene;
     scene_init(&scene);
     View view = app_snapshot();
@@ -2723,7 +2731,7 @@ static void test_player_like_and_header_layout(void) {
 #endif
 }
 
-static void test_playlist_sorting_and_settings(void) {
+static TEST_NOINLINE void test_playlist_sorting_and_settings(void) {
     Scene scene;
     scene_init(&scene);
     View *view = calloc(1, sizeof(*view));
@@ -2867,7 +2875,7 @@ static void test_playlist_sorting_and_settings(void) {
     free(view);
 }
 
-static void test_intro_session_restore_and_player_links(void) {
+static TEST_NOINLINE void test_intro_session_restore_and_player_links(void) {
     /* Purple Spotify logo bitmap generator produces transparent corners, purple disc, and white waves. */
     uint32_t icon_pixels[64 * 64];
     canvas_brand_icon_pixels(64, icon_pixels);
@@ -3028,7 +3036,7 @@ static void test_intro_session_restore_and_player_links(void) {
     free(view);
 }
 
-static void test_memory_bounds(void) {
+static TEST_NOINLINE void test_memory_bounds(void) {
     CHECK(LIST_LIMIT <= 1500);
     CHECK(LIKES_LIMIT <= 500);
     CHECK(PLAYLISTS_LIMIT <= 250);
@@ -3123,7 +3131,7 @@ static void test_memory_bounds(void) {
     platform_unlock();
 }
 
-static void test_native_text_editing(void) {
+static TEST_NOINLINE void test_native_text_editing(void) {
     Scene scene;
     scene_init(&scene);
     View view = app_snapshot();
