@@ -3,11 +3,11 @@
 
 #include "artwork.h"
 
-#define ARTWORK_CACHE_LIMIT 48
-#define ARTWORK_BYTES_LIMIT (2 * 1024 * 1024)
-#define ARTWORK_HARD_BYTES_LIMIT (3 * 1024 * 1024)
-#define ARTWORK_PRIORITY_BYTES_LIMIT (512 * 1024) /* Room for five full-size overlay covers. */
-#define ARTWORK_IDLE_BYTES_LIMIT (1024 * 1024)
+#define ARTWORK_CACHE_LIMIT 112
+#define ARTWORK_BYTES_LIMIT (6 * 1024 * 1024)
+#define ARTWORK_HARD_BYTES_LIMIT (10 * 1024 * 1024)
+#define ARTWORK_PRIORITY_BYTES_LIMIT (1024 * 1024) /* Room for now playing and overlay covers. */
+#define ARTWORK_IDLE_BYTES_LIMIT (3 * 1024 * 1024)
 
 typedef enum { ART_EMPTY, ART_PENDING, ART_LOADING, ART_READY, ART_FAILED } ArtworkState;
 

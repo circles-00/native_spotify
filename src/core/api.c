@@ -128,7 +128,7 @@ static bool exchange(Spotify *spotify, const char *body) {
 
     if (ok && !platform_secret_save(spotify->client_id, tokens.refresh)) {
         snprintf(spotify->message, sizeof(spotify->message),
-                 "Cannot save refresh token. Unlock your system credential store, then reconnect.");
+                 "Cannot save refresh token. Check your credential storage, then reconnect.");
         ok = false;
     }
 
@@ -241,8 +241,7 @@ bool spotify_login(Spotify *spotify) {
     platform_wipe(body, sizeof(body));
 
     if (ok) {
-        snprintf(spotify->message, sizeof(spotify->message),
-                 "Connected. Refresh token saved in your system credential store.");
+        snprintf(spotify->message, sizeof(spotify->message), "Connected. Refresh token saved.");
     }
 
     return ok;
@@ -274,8 +273,8 @@ bool spotify_disconnect(Spotify *spotify) {
 
     if (!platform_secret_delete(spotify->client_id)) {
         snprintf(spotify->message, sizeof(spotify->message),
-                 "Session cleared, but stored credential could not be deleted. Unlock credential store and "
-                 "retry.");
+                 "Session cleared, but stored credential could not be deleted. Check your credential storage "
+                 "and retry.");
 
         return false;
     }

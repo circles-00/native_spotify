@@ -1139,31 +1139,42 @@ static void search_history(Scene *scene, const View *view, Canvas *canvas) {
 }
 
 void scene_draw(Scene *scene, const View *view, Canvas *canvas) {
-    const char *history_art[DESKTOP_SEARCH_HISTORY_LIMIT];
-    unsigned history_count = 0;
+    const char *priority_art[DESKTOP_SEARCH_HISTORY_LIMIT + 1];
+    unsigned priority_count = 0;
+
+    if (view->playback.artwork[0]) {
+        priority_art[priority_count++] = view->playback.artwork;
+    }
 
     if (scene->search_history_open && scene->search_history_panel.w > 0) {
         for (unsigned i = 0; i < view->search_history_count && i < DESKTOP_SEARCH_HISTORY_LIMIT; ++i) {
             if (scene->hits[HIT_HISTORY_FIRST + i].rect.w > 0 && view->search_history[i].artwork[0]) {
-                history_art[history_count++] = view->search_history[i].artwork;
+                priority_art[priority_count++] = view->search_history[i].artwork;
             }
         }
     }
 
-    // The overlay draws last; protect its covers before background artwork can evict them.
-    artwork_begin_frame(history_art, history_count);
-    artwork_pin(view->playback.artwork);
-    artwork_pin(scene->collection_artwork);
-    artwork_pin(view->details.item.artwork);
-    artwork_pin(view->details.artist.artwork);
+    // Protect Now Playing and the open overlay before background artwork can evict them.
+    artwork_begin_frame(priority_art, priority_count);
     artwork_pin(view->profile.artwork);
 
-    for (unsigned i = 0; i < view->details.popular_count; ++i) {
-        artwork_pin(view->details.popular[i].artwork);
-    }
+    if (!scene->home) {
+        if (collection_page(scene->section)) {
+            artwork_pin(view->details.item.artwork);
+            artwork_pin(view->details.artist.artwork);
 
-    for (unsigned i = 0; i < view->profile.following_count; ++i) {
-        artwork_pin(view->profile.following[i].artwork);
+            for (unsigned i = 0; i < view->details.popular_count; ++i) {
+                artwork_pin(view->details.popular[i].artwork);
+            }
+
+            if (scene->section == BROWSE_PROFILE_PLAYLISTS) {
+                for (unsigned i = 0; i < view->profile.following_count; ++i) {
+                    artwork_pin(view->profile.following[i].artwork);
+                }
+            }
+        } else if (scene->section != BROWSE_SEARCH && scene->section != BROWSE_SETTINGS) {
+            artwork_pin(scene->collection_artwork);
+        }
     }
 
     if (scene->panel == PANEL_QUEUE && scene->panel_recent) {

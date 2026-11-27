@@ -84,9 +84,12 @@ int main(void) {
     /* Byte-budget eviction removes stale unpinned artwork while keeping active frame entries. */
     const unsigned tile_side = ARTWORK_SIDE_LIMIT;
     const size_t tile_bytes = (size_t)tile_side * tile_side * sizeof(uint32_t);
+    const unsigned soft_tiles = (unsigned)(ARTWORK_BYTES_LIMIT / tile_bytes);
+    const unsigned idle_tiles = (unsigned)(ARTWORK_IDLE_BYTES_LIMIT / tile_bytes);
+    const unsigned priority_tiles = (unsigned)(ARTWORK_PRIORITY_BYTES_LIMIT / tile_bytes);
     store.frame = 1;
 
-    for (unsigned i = 0; i < 26; ++i) {
+    for (unsigned i = 0; i < soft_tiles + 6; ++i) {
         if (i == 10) {
             store.frame = 2;
         }
@@ -110,8 +113,8 @@ int main(void) {
     /* Stale off-screen artwork is pruned down to the idle budget while recent pins remain ready. */
     store.frame = 1;
 
-    for (unsigned i = 0; i < 18; ++i) {
-        if (i == 14) {
+    for (unsigned i = 0; i < idle_tiles + 8; ++i) {
+        if (i == idle_tiles + 4) {
             store.frame = 5;
         }
 
@@ -128,11 +131,28 @@ int main(void) {
     CHECK(artwork_store_prune_stale(&store, 1, ARTWORK_IDLE_BYTES_LIMIT));
     CHECK(artwork_store_bytes(&store) <= ARTWORK_IDLE_BYTES_LIMIT);
 
-    for (unsigned i = 14; i < 18; ++i) {
+    for (unsigned i = idle_tiles + 4; i < idle_tiles + 8; ++i) {
         char url[128];
         snprintf(url, sizeof(url), "https://i.scdn.co/image/prune%u", i);
         ArtworkEntry *item = artwork_store_request(&store, url, 0);
         CHECK(item && item->state == ART_READY && item->image.pixels != NULL);
+    }
+
+    artwork_store_clear(&store);
+    CHECK(artwork_store_bytes(&store) == 0);
+
+    /* A dense desktop frame (Home + left library sidebar + right queue panel) fits without failing. */
+    store.frame = 1;
+
+    for (unsigned i = 0; i < 64; ++i) {
+        char url[128];
+        snprintf(url, sizeof(url), "https://i.scdn.co/image/desktop%u", i);
+        ArtworkEntry *item = artwork_store_request(&store, url, 0);
+        CHECK(item != NULL);
+        CHECK(artwork_store_evict_budget(&store, tile_bytes, false));
+        item->state = ART_READY;
+        item->image = (Image){tile_side, tile_side, malloc(tile_bytes)};
+        CHECK(item->image.pixels != NULL);
     }
 
     artwork_store_clear(&store);
@@ -173,8 +193,8 @@ int main(void) {
     CHECK(artwork_store_request(&store, "https://i.scdn.co/image/background", 0));
     CHECK(&store.entries[artwork_store_next(&store)] == cover);
     CHECK(!artwork_store_evict_budget(&store, tile_bytes, false));
-    CHECK(artwork_store_evict_budget(&store, 5 * tile_bytes, true));
-    CHECK(!artwork_store_evict_budget(&store, 7 * tile_bytes, true));
+    CHECK(artwork_store_evict_budget(&store, priority_tiles * tile_bytes, true));
+    CHECK(!artwork_store_evict_budget(&store, (priority_tiles + 2) * tile_bytes, true));
 
     cover->state = ART_FAILED;
     artwork_store_request_priority(&store, history, 0);

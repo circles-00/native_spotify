@@ -34,11 +34,10 @@ The Linux ZIP is not an AppImage or a fully static bundle. It targets Ubuntu
 
 ```sh
 sudo apt-get install ca-certificates libx11-6 libcairo2 libpango-1.0-0 libpangocairo-1.0-0 \
-  libfontconfig1 libjpeg-turbo8 libpng16-16 libwebp7 libcurl4 libssl3 libsecret-1-0
+  libfontconfig1 libjpeg-turbo8 libpng16-16 libwebp7 libcurl4 libssl3 libglib2.0-0
 ```
 
-Package names vary by distribution. An X11/XWayland session and an unlocked
-Secret Service provider are also needed. Windows packages use the static MSVC
+Package names vary by distribution. An X11/XWayland session is also needed. Windows packages use the static MSVC
 runtime and require Windows 10/11. Soloist is downloaded at runtime on both platforms.
 
 ## Windows
@@ -74,7 +73,7 @@ On Debian/Ubuntu:
 ```sh
 sudo apt-get install build-essential cmake pkg-config libx11-dev libcairo2-dev \
   libpango1.0-dev libfontconfig1-dev libjpeg-dev libpng-dev \
-  libcurl4-openssl-dev libssl-dev libsecret-1-dev
+  libcurl4-openssl-dev libssl-dev libglib2.0-dev
 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel

@@ -82,8 +82,9 @@ direct Wayland support or exact parity with Spotify's private recommendations.
 Spotify API permissions, account restrictions and device capabilities still apply.
 
 Sign-in uses OAuth PKCE in your browser. Refresh tokens and Soloist keys use
-Credential Manager on Windows, Secret Service on Linux, and Keystore-backed
-storage on Android—never a plaintext credential fallback. Lyrics lookup sends
+Credential Manager on Windows and Keystore-backed storage on Android. On Linux
+they are stored as plain text files (mode 0600) in
+`$XDG_CACHE_HOME/native-spotify/credentials`, so no keyring is required. Lyrics lookup sends
 track metadata to LRCLIB, not Spotify credentials. On desktop, Soloist receives
 its key as a process argument; Linux users should consider `/proc` visibility.
 

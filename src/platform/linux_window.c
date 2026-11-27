@@ -3,8 +3,10 @@
 #include "canvas.h"
 #include "controller.h"
 #include "linux_canvas.h"
+#include "linux_media.h"
 #include "ui.h"
 
+#include <X11/XF86keysym.h>
 #include <X11/XKBlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
@@ -104,6 +106,7 @@ static void draw(NativeWindow *window) {
     Canvas canvas;
     linux_canvas_begin(&window->backend, paint, &canvas);
     ui_controller_draw(&window->controller, window->width / scale, window->height / scale, &canvas);
+    linux_media_update(window->controller.snapshot);
     linux_canvas_end(&window->backend);
     input_focus(window);
 
@@ -260,6 +263,26 @@ static void key(NativeWindow *window, XKeyEvent *event) {
         if (shortcut == UI_SHORTCUT_HANDLED) {
             return;
         }
+    }
+
+    if (symbol == XF86XK_AudioPlay) {
+        app_action(ACTION_TOGGLE_PLAYBACK);
+        return;
+    }
+
+    if (symbol == XF86XK_AudioPause || symbol == XF86XK_AudioStop) {
+        app_action(ACTION_PAUSE);
+        return;
+    }
+
+    if (symbol == XF86XK_AudioNext) {
+        app_action(ACTION_NEXT);
+        return;
+    }
+
+    if (symbol == XF86XK_AudioPrev) {
+        app_action(ACTION_PREVIOUS);
+        return;
     }
 
     // Holding Space must not toggle playback over and over.
@@ -480,6 +503,8 @@ int ui_run(bool smoke_test) {
     fflush(stdout);
 
     if (!smoke_test) {
+        linux_media_start();
+        linux_media_update(window->controller.snapshot);
         app_action(ACTION_RESTORE);
     }
 
@@ -613,6 +638,19 @@ int ui_run(bool smoke_test) {
             dirty = true;
         }
 
+        if (linux_media_take_raise()) {
+            XMapRaised(window->display, window->handle);
+            XEvent active = {0};
+            active.xclient.type = ClientMessage;
+            active.xclient.window = window->handle;
+            active.xclient.message_type = XInternAtom(window->display, "_NET_ACTIVE_WINDOW", False);
+            active.xclient.format = 32;
+            active.xclient.data.l[0] = 1;
+            XSendEvent(window->display, DefaultRootWindow(window->display), False,
+                       SubstructureRedirectMask | SubstructureNotifyMask, &active);
+            XFlush(window->display);
+        }
+
         int sync_timeout = app_tick(window->visible);
         char drain[64];
 
@@ -643,6 +681,7 @@ int ui_run(bool smoke_test) {
     }
 
     if (!smoke_test) {
+        linux_media_stop();
         app_shutdown();
         ui_controller_destroy(&window->controller);
         free(window);

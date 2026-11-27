@@ -2,7 +2,8 @@
 #include "platform.h"
 
 #include <curl/curl.h>
-#include <libsecret/secret.h>
+#include <fcntl.h>
+#include <gio/gio.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <pthread.h>
@@ -10,13 +11,12 @@
 #ifdef __GLIBC__
 #include <malloc.h>
 #endif
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
-
-static const SecretSchema schema = {.name = "org.nativecontroller.Spotify",
-                                    .flags = SECRET_SCHEMA_NONE,
-                                    .attributes = {{"client-id", SECRET_SCHEMA_ATTRIBUTE_STRING}, {NULL, 0}}};
+#include <unistd.h>
 
 bool platform_init(void) {
 #ifdef __GLIBC__
@@ -170,43 +170,126 @@ bool platform_open_url(const char *url) {
     return ok;
 }
 
+// Secrets are stored as plain text files under the user's cache directory (mode 0600 in a 0700
+// directory). This is a deliberate choice so Linux works without a Secret Service provider.
+static bool secret_path(const char *account, char *out, size_t capacity) {
+    if (!account[0]) {
+        return false;
+    }
+
+    for (const char *c = account; *c; ++c) {
+        bool safe = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') ||
+                    *c == '-' || *c == '_';
+
+        if (!safe) {
+            return false;
+        }
+    }
+
+    const char *base = getenv("XDG_CACHE_HOME");
+    const char *home = getenv("HOME");
+    char directory[PLATFORM_PATH_CAPACITY];
+    int size = 0;
+
+    if (base && base[0] == '/') {
+        size = snprintf(directory, sizeof(directory), "%s/native-spotify/credentials", base);
+    } else if (home && home[0] == '/') {
+        size = snprintf(directory, sizeof(directory), "%s/.cache/native-spotify/credentials", home);
+    }
+
+    if (size <= 0 || (size_t)size >= sizeof(directory)) {
+        return false;
+    }
+
+    if (!platform_make_dir(directory)) {
+        return false;
+    }
+
+    size = snprintf(out, capacity, "%s/%s", directory, account);
+
+    return size > 0 && (size_t)size < capacity;
+}
+
 bool platform_secret_load(const char *account, char *out, size_t capacity) {
-    GError *error = NULL;
-    char *secret = secret_password_lookup_sync(&schema, NULL, &error, "client-id", account, NULL);
-    bool ok = !error && secret && strlen(secret) < capacity;
+    char path[PLATFORM_PATH_CAPACITY];
+
+    if (capacity == 0 || !secret_path(account, path, sizeof(path))) {
+        return false;
+    }
+
+    int file = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+
+    if (file < 0) {
+        return false;
+    }
+
+    struct stat info;
+    bool ok =
+        !fstat(file, &info) && S_ISREG(info.st_mode) && info.st_size > 0 && (size_t)info.st_size < capacity;
 
     if (ok) {
-        memcpy(out, secret, strlen(secret) + 1);
+        ssize_t size = read(file, out, (size_t)info.st_size);
+        ok = size == (ssize_t)info.st_size && !memchr(out, 0, (size_t)size);
+
+        if (ok) {
+            out[size] = 0;
+        } else {
+            platform_wipe(out, capacity);
+        }
     }
 
-    if (secret) {
-        platform_wipe(secret, strlen(secret));
-    }
-
-    secret_password_free(secret);
-    g_clear_error(&error);
+    close(file);
 
     return ok;
 }
 
 bool platform_secret_save(const char *account, const char *secret) {
-    GError *error = NULL;
+    char path[PLATFORM_PATH_CAPACITY];
+    char temporary[PLATFORM_PATH_CAPACITY + 8];
 
-    bool ok =
-        secret_password_store_sync(&schema, SECRET_COLLECTION_DEFAULT, "Native Controller Spotify login",
-                                   secret, NULL, &error, "client-id", account, NULL);
+    if (!secret_path(account, path, sizeof(path))) {
+        return false;
+    }
 
-    g_clear_error(&error);
+    snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+    unlink(temporary);
+
+    int file = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+
+    if (file < 0) {
+        return false;
+    }
+
+    size_t length = strlen(secret);
+    bool ok = fchmod(file, 0600) == 0;
+
+    if (ok) {
+        ok = write(file, secret, length) == (ssize_t)length;
+    }
+
+    if (ok) {
+        ok = fsync(file) == 0;
+    }
+
+    ok = close(file) == 0 && ok;
+
+    if (ok) {
+        ok = rename(temporary, path) == 0;
+    }
+
+    if (!ok) {
+        unlink(temporary);
+    }
 
     return ok;
 }
 
 bool platform_secret_delete(const char *account) {
-    GError *error = NULL;
-    secret_password_clear_sync(&schema, NULL, &error, "client-id", account, NULL);
+    char path[PLATFORM_PATH_CAPACITY];
 
-    bool ok = !error;
-    g_clear_error(&error);
+    if (!secret_path(account, path, sizeof(path))) {
+        return false;
+    }
 
-    return ok;
+    return unlink(path) == 0 || errno == ENOENT;
 }

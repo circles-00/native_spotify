@@ -11,7 +11,9 @@
   required, including inside functions and control-flow blocks.
 - Expand error branches and avoid compressed multi-statement lines. Follow
   `.clang-format`; do not format vendored code.
-- Never log tokens or fall back to plaintext credential storage.
+- Never log tokens. Windows and Android use the OS credential store with no
+  plaintext fallback; Linux intentionally stores credentials as 0600 plain text
+  files under `$XDG_CACHE_HOME/native-spotify/credentials` (owner's choice).
 - Run tests from a build directory: `ctest --output-on-failure -V`.
 - Separate cross-build evidence from runtime verification. Do not claim live
   Spotify functionality has been verified without a configured account/device.

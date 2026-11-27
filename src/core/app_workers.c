@@ -1257,7 +1257,7 @@ static void save_key(void *argument) {
     if (!ok) {
         platform_lock();
         snprintf(app_state.view.engine_message, sizeof(app_state.view.engine_message),
-                 "Could not save the key in your system credential store. Unlock it and try again.");
+                 "Could not save the key to your credential storage. Check it and try again.");
         app_state.view.engine = ENGINE_FAILED;
         platform_unlock();
         app_wake();
